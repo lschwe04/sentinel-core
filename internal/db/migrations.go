@@ -17,6 +17,8 @@ func RunMigrations() error {
 		slug VARCHAR(64) UNIQUE NOT NULL,
 		logo_url TEXT,
 		primary_color VARCHAR(7) DEFAULT '#2563eb',
+		subscription_status VARCHAR(32) DEFAULT 'inactive',
+		stripe_customer_id VARCHAR(255),
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);
 
