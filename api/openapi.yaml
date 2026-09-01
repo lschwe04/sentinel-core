@@ -1,0 +1,76 @@
+openapi: 3.0.3
+info:
+  title: SentinelCore Management Hub API
+  version: 1.0.0
+  description: Zentrale API für Telemetrie, CIS-Hardening und hybrides Server-Provisioning über mTLS und WireGuard.
+servers:
+  - url: https://localhost:8443/api/v1
+paths:
+  /metrics:
+    post:
+      summary: Telemetriedaten des Agenten empfangen
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NodeMetrics'
+      responses:
+        '201':
+          description: Metrik erfolgreich gespeichert
+    get:
+      summary: Neueste Metriken eines Nodes abrufen
+      parameters:
+        - name: node_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Erfolgreich abgefragt
+
+  /hardening/report:
+    post:
+      summary: Empfängt den Hardening-Status-Report vom Agenten (Closed Loop)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                node_id:
+                  type: string
+                success:
+                  type: boolean
+                message:
+                  type: string
+                open_issues:
+                  type: integer
+      responses:
+        '200':
+          description: Status in DB aktualisiert
+
+  /provisioning/trigger:
+    post:
+      summary: Startet das Provisioning (Terraform oder Ansible)
+      responses:
+        '202':
+          description: Provisioning-Job erfolgreich im Hintergrund gestartet
+
+components:
+  schemas:
+    NodeMetrics:
+      type: object
+      properties:
+        node_id:
+          type: string
+        cpu_usage_pct:
+          type: number
+        ram_usage_pct:
+          type: number
+        disk_usage_pct:
+          type: number
+        uptime_hours:
+          type: integer

@@ -8,11 +8,16 @@ import (
 func RenderHardeningTab(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `
-		<div class="border border-gray-700 rounded-lg p-6 bg-gray-800">
+		<div class="border border-gray-700 rounded-lg p-6 bg-gray-800" hx-get="/api/v1/hardening/status?node_id=node-local-docker" hx-trigger="every 3s" hx-swap="outerHTML">
 			<h2 class="text-xl font-semibold mb-4">🛡️ CIS Hardening Management</h2>
-			<p class="text-gray-400 mb-6">Überwache und erzwinge Compliance-Richtlinien auf allen angebundenen Nodes.</p>
+			<p class="text-gray-400 mb-6">Überwache und erzwinge Compliance-Richtlinien in Echtzeit.</p>
+			
+			<div class="mb-4 p-4 bg-gray-900 rounded border border-gray-700 font-mono text-sm">
+				<span class="text-yellow-400">Status:</span> Läuft / Synchronisiert...
+			</div>
+
 			<button hx-post="/api/v1/hardening/trigger" hx-swap="outerHTML"
-					class="px-6 py-2 bg-blue-600 hover:bg-blue-500 font-bold rounded transition">
+					class="px-6 py-2 bg-blue-600 hover:bg-blue-500 font-bold rounded transition text-white">
 				CIS Hardening (Level 2) jetzt ausführen
 			</button>
 		</div>
@@ -26,7 +31,7 @@ func RenderMetricsTab(w http.ResponseWriter, r *http.Request) {
 			<h2 class="text-xl font-semibold mb-4">📊 Live Metriken & Auslastung</h2>
 			<p class="text-gray-400">Echtzeit-Telemetrie via gopsutil der angebundenen Nodes.</p>
 			<div class="mt-4 p-4 bg-gray-900 rounded border border-gray-700 font-mono text-sm text-green-400">
-				[System OK] Alle Agenten liefern stabile Telemetriedaten.
+				[System OK] Alle Agenten liefern stabile mTLS-Telemetriedaten.
 			</div>
 		</div>
 	`)
@@ -57,7 +62,7 @@ func RenderProvisioningTab(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `
 		<div class="border border-gray-700 rounded-lg p-6 bg-gray-800">
 			<h2 class="text-xl font-semibold mb-4">🚀 Hybrides Server Provisioning & Security Hardening</h2>
-			<p class="text-gray-400 mb-6">Rolle neue Nodes via Terraform (Cloud) oder Ansible (On-Premises) aus und wähle direkt das Sicherheitslevel.</p>
+			<p class="text-gray-400 mb-6">Rolle neue Nodes via Terraform (Cloud) oder Ansible (On-Premises) aus.</p>
 			
 			<form hx-post="/api/v1/provisioning/trigger" hx-swap="outerHTML" class="space-y-4 max-w-lg">
 				<div>
