@@ -4,26 +4,30 @@ import (
 	"context"
 	"net/http"
 	"sentinel-core/internal/db"
+	"time"
 )
 
-func RequireActiveSubscription(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// RequireActiveSubscription erzwingt, dass das Systemhaus ein aktives Abo hat
+func RequireActiveSubscription(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID := r.Header.Get("X-Tenant-ID")
 		if tenantID == "" {
-			http.Error(w, "Unauthorized: Missing Tenant", http.StatusUnauthorized)
+			http.Error(w, "Unauthorized: Missing Tenant Header", http.StatusUnauthorized)
 			return
 		}
 
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
 		var status string
-		query := `SELECT subscription_status FROM tenants WHERE slug = $1`
+		query := `SELECT subscription_status FROM tenants WHERE slug = $1 OR id::text = $1`
 		err := db.Pool.QueryRow(ctx, query, tenantID).Scan(&status)
 
 		if err != nil || status != "active" {
-			http.Error(w, "Payment Required: Active subscription needed", http.StatusPaymentRequired)
+			http.Error(w, "Payment Required: Active subscription needed to ingest data", http.StatusPaymentRequired)
 			return
 		}
 
-		next.ServeHTTP(w, r)
-	})
+		next(w, r)
+	}
 }
