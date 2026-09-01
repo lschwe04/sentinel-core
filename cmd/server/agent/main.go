@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"sentinel-agent/internal/collector"
-	"sentinel-agent/internal/executor"
-	"sentinel-agent/internal/network"
+	"sentinel-core/internal/collector"
+	"sentinel-core/internal/executor"
+	"sentinel-core/internal/network"
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/mem"
@@ -92,7 +92,6 @@ func startMetricsReporter(nodeID string, hubMetricsURL string) {
 			continue
 		}
 
-		// In Produktion mit mTLS Client-Zertifikaten absichern!
 		resp, err := http.Post(hubMetricsURL, "application/json", bytes.NewBuffer(data))
 		if err != nil {
 			slog.Warn("Konnte Metriken nicht an Hub senden", "error", err)

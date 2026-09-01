@@ -18,18 +18,23 @@ resource "hcloud_server" "node" {
   server_type = var.server_type
   location    = "fsn1"
   labels = {
-    managed_by = "sentinel-core"
-    env        = var.environment
+    managed_by    = "sentinel-core"
+    environment   = var.environment
+    hardening_lvl = var.hardening_level
   }
 
-  # Cloud-Init zur Vorbereitung des Netzwerks und SSH-Keys
   user_data = <<-EOF
               #cloud-config
               package_update: true
               packages:
                 - wireguard
                 - curl
+                - git
+                - ansible
+                - lynis
+                - prometheus-node-exporter
               runcmd:
-                - echo "Node bootstrapped by SentinelCore" > /etc/sentinel_bootstrap.log
+                - systemctl enable --now prometheus-node-exporter
+                - echo "Node bootstrapped with SentinelCore. Hardening level: ${var.hardening_level}" > /etc/sentinel_bootstrap.log
               EOF
 }

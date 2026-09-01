@@ -14,3 +14,10 @@ variable "server_type" {
   default     = "cx22"
   description = "Instanz-Größe beim Cloud-Provider"
 }
+
+# --- NEU HINZUFÜGEN ---
+variable "hardening_level" {
+  type        = string
+  default     = "level1"
+  description = "Ausgewähltes CIS Hardening Profil (level1 oder level2)"
+}
