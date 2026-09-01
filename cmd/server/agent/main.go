@@ -30,26 +30,39 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
+	addr := os.Getenv("AGENT_LISTEN_ADDR")
+	if addr == "" {
+		addr = "10.0.0.15:9443"
+	}
+	nodeID := os.Getenv("NODE_ID")
+	if nodeID == "" {
+		nodeID = "node-1234-prod"
+	}
+	hubMetricsURL := os.Getenv("HUB_METRICS_URL")
+	if hubMetricsURL == "" {
+		hubMetricsURL = "https://10.0.0.1:8443/api/v1/metrics"
+	}
+
 	mux := http.NewServeMux()
 
 	mux.Handle("POST /trigger-ansible", enforceVPN(http.HandlerFunc(executor.RunAnsiblePlaybook)))
 	mux.Handle("GET /backup-status", enforceVPN(http.HandlerFunc(collector.CheckResticStatus)))
 
 	server := &http.Server{
-		Addr:         "10.0.0.15:9443",
+		Addr:         addr,
 		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}
 
-	// Start des Hintergrund-Workers für Telemetrie (Metriken an Hub senden)
-	go startMetricsReporter("node-1234-prod", "https://10.0.0.1:8443/api/v1/metrics")
+	// Hintergrund-Worker mit robuster Retry-Logik gestartet
+	go startMetricsReporter(nodeID, hubMetricsURL)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		slog.Info("Sentinel Agent gestartet auf WireGuard Interface", "addr", server.Addr)
+		slog.Info("Sentinel Agent gestartet", "addr", server.Addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("Agent Server abgestürzt", "error", err)
 			os.Exit(1)
@@ -63,6 +76,7 @@ func main() {
 	server.Shutdown(ctx)
 }
 
+// Verbesserter Metrics Reporter mit Exponential-Backoff-Resilienz
 func startMetricsReporter(nodeID string, hubMetricsURL string) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -89,15 +103,32 @@ func startMetricsReporter(nodeID string, hubMetricsURL string) {
 
 		data, err := json.Marshal(payload)
 		if err != nil {
+			slog.Error("Fehler beim JSON-Marshalling der Metriken", "error", err)
 			continue
 		}
 
-		resp, err := http.Post(hubMetricsURL, "application/json", bytes.NewBuffer(data))
-		if err != nil {
-			slog.Warn("Konnte Metriken nicht an Hub senden", "error", err)
-			continue
+		// Exponential Backoff Retry-Schleife
+		backoff := 2 * time.Second
+		maxRetries := 3
+		var success bool
+
+		for i := 1; i <= maxRetries; i++ {
+			resp, err := http.Post(hubMetricsURL, "application/json", bytes.NewBuffer(data))
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+					success = true
+					break
+				}
+			}
+			slog.Warn("Metrik-Übertragung fehlgeschlagen, neuer Versuch...", "attempt", i, "error", err)
+			time.Sleep(backoff)
+			backoff *= 2 // Verdoppelung der Wartezeit (2s -> 4s -> 8s)
 		}
-		resp.Body.Close()
+
+		if !success {
+			slog.Error("Metrik-Übertragung nach max. Retries endgültig fehlgeschlagen", "node_id", nodeID)
+		}
 	}
 }
 

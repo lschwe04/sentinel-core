@@ -18,6 +18,11 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
+	addr := os.Getenv("HUB_ADDR")
+	if addr == "" {
+		addr = "10.0.0.1:8443"
+	}
+
 	mux := http.NewServeMux()
 
 	// API Endpoints für Nodes & UI
@@ -33,8 +38,6 @@ func main() {
 	mux.HandleFunc("GET /api/v1/ui/backups", handlers.RenderBackupsTab)
 	mux.HandleFunc("GET /api/v1/ui/logs", handlers.RenderLogsTab)
 	mux.HandleFunc("GET /api/v1/ui/provisioning", handlers.RenderProvisioningTab)
-
-	// NEU: Routing für das Server-Provisioning (damit das Formular funktioniert)
 	mux.HandleFunc("POST /api/v1/provisioning/trigger", handlers.TriggerProvisioning)
 
 	secureMux := enforceAuth(mux)
@@ -46,7 +49,7 @@ func main() {
 	}
 
 	server := &http.Server{
-		Addr:         "10.0.0.1:8443",
+		Addr:         addr,
 		Handler:      secureMux,
 		TLSConfig:    tlsConfig,
 		ReadTimeout:  5 * time.Second,
@@ -58,7 +61,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		slog.Info("SentinelCore Hub API startet auf 10.0.0.1:8443 (mTLS aktiv)")
+		slog.Info("SentinelCore Hub API startet", "addr", server.Addr)
 		if err := server.ListenAndServeTLS("certs/hub-cert.pem", "certs/hub-key.pem"); err != nil && err != http.ErrServerClosed {
 			slog.Error("Server Fehler", "error", err)
 			os.Exit(1)
@@ -89,6 +92,13 @@ func getEnterpriseTLSConfig() (*tls.Config, error) {
 }
 
 func enforceAuth(next http.Handler) http.Handler {
+	// Token über Umgebungsvariable beziehen statt hartkodiert
+	secretToken := os.Getenv("ENTERPRISE_AUTH_TOKEN")
+	if secretToken == "" {
+		secretToken = "SECRET_ENTERPRISE_TOKEN" // Fallback für lokale Entwicklung
+	}
+	expectedHeader := "Bearer " + secretToken
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 			clientCert := r.TLS.PeerCertificates[0]
@@ -96,7 +106,7 @@ func enforceAuth(next http.Handler) http.Handler {
 		}
 
 		token := r.Header.Get("Authorization")
-		if token != "Bearer SECRET_ENTERPRISE_TOKEN" {
+		if token != expectedHeader {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
