@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  sentinel-hub:
+    build: 
+      context: .
+      dockerfile: Dockerfile.hub
+    ports:
+      - "8443:8443"
+    environment:
+      - HUB_ADDR=0.0.0.0:8443
+      - ENTERPRISE_AUTH_TOKEN=mein-geheimes-token
+    volumes:
+      - ./certs:/app/certs
+
+  sentinel-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    ports:
+      - "9443:9443"
+    environment:
+      - AGENT_LISTEN_ADDR=0.0.0.0:9443
+      - NODE_ID=node-local-docker
+      - HUB_METRICS_URL=https://sentinel-hub:8443/api/v1/metrics
+    depends_on:
+      - sentinel-hub
