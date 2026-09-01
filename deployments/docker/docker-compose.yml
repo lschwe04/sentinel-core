@@ -20,6 +20,7 @@ services:
       - sentinel-net
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ../../migrations:/docker-entrypoint-initdb.d
 
   prometheus:
     image: prom/prometheus:latest
