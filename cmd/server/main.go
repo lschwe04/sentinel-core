@@ -95,7 +95,7 @@ func enforceAuth(next http.Handler) http.Handler {
 	// Token über Umgebungsvariable beziehen statt hartkodiert
 	secretToken := os.Getenv("ENTERPRISE_AUTH_TOKEN")
 	if secretToken == "" {
-		secretToken = "SECRET_ENTERPRISE_TOKEN" // Fallback für lokale Entwicklung
+		panic("CRITICAL: ENTERPRISE_AUTH_TOKEN ist nicht gesetzt!")
 	}
 	expectedHeader := "Bearer " + secretToken
 

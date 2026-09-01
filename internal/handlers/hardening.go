@@ -1,16 +1,20 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"time"
+
+	"sentinel-core/internal/db"
 )
 
 type HardeningStatus struct {
-	NodeID      string `json:"node_id"`
-	CISLevel1   bool   `json:"cis_level_1_compliant"`
-	CISLevel2   bool   `json:"cis_level_2_compliant"`
-	LastScan    string `json:"last_scan"`
-	OpenIssues  int    `json:"open_issues"`
+	NodeID     string    `json:"node_id"`
+	CISLevel1  bool      `json:"cis_level_1_compliant"`
+	CISLevel2  bool      `json:"cis_level_2_compliant"`
+	LastScan   time.Time `json:"last_scan"`
+	OpenIssues int       `json:"open_issues"`
 }
 
 func GetHardeningStatus(w http.ResponseWriter, r *http.Request) {
@@ -20,13 +24,23 @@ func GetHardeningStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mock-Daten für Datenbankabfrage (PostgreSQL)
-	status := HardeningStatus{
-		NodeID:     nodeID,
-		CISLevel1:  true,
-		CISLevel2:  false, // Level 2 oft strenger
-		LastScan:   "2026-09-01T14:00:00Z",
-		OpenIssues: 3,
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	var status HardeningStatus
+	query := `SELECT node_id, cis_level_1_compliant, cis_level_2_compliant, last_scan, open_issues FROM hardening_status WHERE node_id = $1`
+
+	err := db.Pool.QueryRow(ctx, query, nodeID).Scan(
+		&status.NodeID,
+		&status.CISLevel1,
+		&status.CISLevel2,
+		&status.LastScan,
+		&status.OpenIssues,
+	)
+
+	if err != nil {
+		http.Error(w, "Hardening-Status für diesen Node nicht gefunden", http.StatusNotFound)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -34,8 +48,6 @@ func GetHardeningStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func TriggerHardening(w http.ResponseWriter, r *http.Request) {
-	// Hier würde der Hub den Agenten via gRPC/HTTP auf dem Wireguard Interface kontaktieren
-	// um das lokale Ansible-Playbook zur Härtung zu triggern.
 	w.WriteHeader(http.StatusAccepted)
 	w.Write([]byte(`{"status": "hardening_job_queued"}`))
 }

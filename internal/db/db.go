@@ -14,15 +14,16 @@ var Pool *pgxpool.Pool
 func InitDB() error {
 	ctx := context.Background()
 	connStr := os.Getenv("DATABASE_URL")
+
 	if connStr == "" {
-		// Fallback zu Standard-Werten aus deiner Config
-		connStr = "postgres://sentinel:secret@postgres:5432/sentinel_db?sslmode=verify-full"
+		slog.Error("CRITICAL: DATABASE_URL Umgebungsvariable fehlt. Abbruch aus Sicherheitsgründen.")
+		os.Exit(1)
 	}
 
 	var err error
 	Pool, err = pgxpool.New(ctx, connStr)
 	if err != nil {
-		return fmt.Errorf("konnte Verbindung zur Datenbank nicht herstellen: %w", err)
+		return fmt.Errorf("verbindung zur Datenbank fehlgeschlagen: %w", err)
 	}
 
 	if err := Pool.Ping(ctx); err != nil {

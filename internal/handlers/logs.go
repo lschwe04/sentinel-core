@@ -1,34 +1,45 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"time"
+
+	"sentinel-core/internal/db"
 )
 
 type SecurityAlert struct {
-	Timestamp string `json:"timestamp"`
-	Severity  string `json:"severity"`
-	Source    string `json:"source"` // z.B. "falco", "auditd"
-	Message   string `json:"message"`
+	Timestamp time.Time `json:"timestamp"`
+	Severity  string    `json:"severity"`
+	Source    string    `json:"source"`
+	Message   string    `json:"message"`
 }
 
 func GetSecurityLogs(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.URL.Query().Get("node_id")
+	if nodeID == "" {
+		http.Error(w, "node_id required", http.StatusBadRequest)
+		return
+	}
 
-	// Mock: Normalerweise ein sicherer SELECT auf die Datenbank (z.B. pgxpool)
-	alerts := []SecurityAlert{
-		{
-			Timestamp: "2026-09-01T19:10:00Z",
-			Severity:  "CRITICAL",
-			Source:    "falco",
-			Message:   "Unauthorized bash execution detected in container",
-		},
-		{
-			Timestamp: "2026-09-01T18:45:00Z",
-			Severity:  "WARNING",
-			Source:    "auditd",
-			Message:   "Failed SSH login attempt",
-		},
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	query := `SELECT created_at, severity, source, message FROM security_logs WHERE node_id = $1 ORDER BY created_at DESC LIMIT 50`
+	rows, err := db.Pool.Query(ctx, query, nodeID)
+	if err != nil {
+		http.Error(w, "Fehler beim Laden der Logs", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var alerts []SecurityAlert
+	for rows.Next() {
+		var alert SecurityAlert
+		if err := rows.Scan(&alert.Timestamp, &alert.Severity, &alert.Source, &alert.Message); err == nil {
+			alerts = append(alerts, alert)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
