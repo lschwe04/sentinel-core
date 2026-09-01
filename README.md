@@ -4,12 +4,13 @@ SentinelCore Hub ist die zentrale Management- und Steuerungseinheit für verteil
 
 ## 🚀 Kernfunktionen
 
-* **CIS Hardening Management:** Überwachung und automatisierte Durchsetzung von Compliance-Richtlinien (CIS Level 1 & Level 2).
+* **CIS Hardening Management:** Überwachung und automatisierte Durchsetzung von Compliance-Richtlinien (CIS Level 1 & Level 2) inklusive Live-Status-Tracking.
+* **Closed-Loop-Reporting:** Echtzeit-Rückkanal von den Agenten per mTLS zur automatischen Aktualisierung des Compliance-Status in PostgreSQL.
 * **Live-Telemetrie:** Echtzeit-Auswertung von Systemmetriken (CPU, RAM, Disk) angebundener Nodes via `gopsutil`.
 * **Backup-Überwachung:** Zentrales Monitoring von Restic-Snapshots und S3 Object-Lock-Status.
 * **Security Audit Logs:** Echtzeit-Analyse von Sicherheitsereignissen aus Quellen wie Falco und Auditd.
 * **Hybrides Server Provisioning:** Automatisierte Ausrollung über Terraform (Cloud-Provider wie Hetzner) oder direkt via Ansible (On-Premises).
-* **Reaktives UI:** Schlankes Frontend gesteuert über HTMX und Tailwind CSS ohne schweren JavaScript-Framework-Overhead.
+* **Reaktives UI:** Schlankes Frontend gesteuert über HTMX (mit automatisiertem Live-Polling) und Tailwind CSS ohne schweren JavaScript-Framework-Overhead.
 
 ---
 
@@ -25,20 +26,13 @@ SentinelCore Hub ist die zentrale Management- und Steuerungseinheit für verteil
 
 * **Backend:** Go, `pgxpool` (PostgreSQL)
 * **Frontend:** HTMX, Tailwind CSS
-* **Infrastruktur & DevOps:** Docker (Distroless Images), Terraform, GitHub Actions CI/CD
+* **Infrastruktur & DevOps:** Docker (Distroless Images), Terraform, Ansible, GitHub Actions CI/CD
 
 ---
 
 ## 📦 Schnellstart (Docker Compose)
 
 1. Repository klonen:
-   ```bash
+   bash
    git clone [https://github.com/lschwe04/sentinel-core.git](https://github.com/lschwe04/sentinel-core.git)
    cd sentinel-core
-
-mTLS-Zertifikate im Ordner certs/ ablegen.
-
-Container starten:
-
-Bash
-docker-compose -f deployments/docker/docker-compose.yml up -d
