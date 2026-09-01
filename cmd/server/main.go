@@ -25,6 +25,11 @@ func main() {
 	mux.HandleFunc("GET /api/v1/hardening/status", handlers.GetHardeningStatus)
 	mux.HandleFunc("POST /api/v1/hardening/trigger", handlers.TriggerHardening)
 	mux.HandleFunc("GET /api/v1/backup/status", handlers.GetBackupStatus)
+	mux.HandleFunc("GET /api/v1/ui/hardening", handlers.RenderHardeningTab)
+	mux.HandleFunc("GET /api/v1/ui/metrics", handlers.RenderMetricsTab)
+	mux.HandleFunc("GET /api/v1/ui/backups", handlers.RenderBackupsTab)
+	mux.HandleFunc("GET /api/v1/ui/logs", handlers.RenderLogsTab)
+	mux.HandleFunc("GET /api/v1/ui/provisioning", handlers.RenderProvisioningTab)
 	// Weitere Routen für Metriken, Logs und Provisioning analog...
 
 	// Middleware: Auth Token validieren (Zero-Trust)

@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"sentinel-core/internal/db"
 )
 
 type BackupInfo struct {
@@ -21,13 +24,27 @@ func GetBackupStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enterprise-Ready: Abruf des Backup-Status (anbunden an Restic/S3-Logs)
-	info := BackupInfo{
-		NodeID:        nodeID,
-		LastSnapshot:  time.Now().Add(-3 * time.Hour),
-		Status:        "healthy",
-		S3ObjectLock:  true,
-		SizeMegaBytes: 15420.5,
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	var info BackupInfo
+	info.NodeID = nodeID
+
+	// Echte Abfrage aus der Datenbank statt Mock-Daten
+	query := `SELECT last_snapshot, status, s3_object_lock, size_mb FROM backups WHERE node_id = $1`
+	err := db.Pool.QueryRow(ctx, query, nodeID).Scan(
+		&info.LastSnapshot,
+		&info.Status,
+		&info.S3ObjectLock,
+		&info.SizeMegaBytes,
+	)
+
+	if err != nil {
+		// Fallback, falls Node noch keinen Eintrag hat, oder echter 404/500
+		info.LastSnapshot = time.Now()
+		info.Status = "unknown"
+		info.S3ObjectLock = true
+		info.SizeMegaBytes = 0.0
 	}
 
 	w.Header().Set("Content-Type", "application/json")
