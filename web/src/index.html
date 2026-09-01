@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>SentinelCore - Management Hub</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans antialiased">
+    <div class="flex h-screen overflow-hidden">
+        
+        <!-- Sidebar -->
+        <aside class="w-64 bg-gray-800 border-r border-gray-700 flex flex-col">
+            <div class="p-6">
+                <h1 class="text-2xl font-bold text-blue-500 tracking-wider">Sentinel<span class="text-white">Core</span></h1>
+            </div>
+            <nav class="flex-1 px-4 space-y-2">
+                <!-- Die 5 Reiter (Tabs) über HTMX gesteuert -->
+                <button hx-get="/api/v1/ui/hardening" hx-target="#main-content" 
+                        class="w-full text-left px-4 py-2 bg-gray-700 hover:bg-blue-600 rounded">
+                    🛡️ Hardening (CIS)
+                </button>
+                <button hx-get="/api/v1/ui/metrics" hx-target="#main-content" 
+                        class="w-full text-left px-4 py-2 hover:bg-blue-600 rounded">
+                    📊 Metriken
+                </button>
+                <button hx-get="/api/v1/ui/backups" hx-target="#main-content" 
+                        class="w-full text-left px-4 py-2 hover:bg-blue-600 rounded">
+                    💾 Backup Status
+                </button>
+                <button hx-get="/api/v1/ui/logs" hx-target="#main-content" 
+                        class="w-full text-left px-4 py-2 hover:bg-blue-600 rounded">
+                    📋 Security Logs
+                </button>
+                <button hx-get="/api/v1/ui/provisioning" hx-target="#main-content" 
+                        class="w-full text-left px-4 py-2 hover:bg-blue-600 rounded">
+                    🚀 Server Ausrollung
+                </button>
+            </nav>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="flex-1 overflow-y-auto p-8" id="main-content">
+            <div class="border border-gray-700 rounded-lg p-6 bg-gray-800">
+                <h2 class="text-xl font-semibold mb-4">Willkommen bei SentinelCore</h2>
+                <p class="text-gray-400">Wähle einen Node oder eine Funktion aus der Navigation.</p>
+                
+                <!-- Beispiel: Hardening Trigger Button für HTMX -->
+                <div class="mt-8">
+                    <button hx-post="/api/v1/hardening/trigger" 
+                            hx-swap="outerHTML"
+                            class="px-6 py-2 bg-blue-600 hover:bg-blue-500 font-bold rounded transition">
+                        CIS Hardening (Level 2) ausführen
+                    </button>
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

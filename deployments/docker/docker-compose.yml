@@ -1,0 +1,36 @@
+version: '3.8'
+services:
+  sentinel-core:
+    build: .
+    ports:
+      - "8443:8443"
+    networks:
+      - sentinel-net
+    volumes:
+      - ./certs:/certs:ro
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: sentinel_db
+    networks:
+      - sentinel-net
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  prometheus:
+    image: prom/prometheus:latest
+    networks:
+      - sentinel-net
+    volumes:
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+networks:
+  sentinel-net:
+    driver: bridge
+
+volumes:
+  pgdata:
