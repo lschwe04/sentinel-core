@@ -35,3 +35,10 @@ SentinelCore Hub ist die zentrale Management- und Steuerungseinheit für verteil
    ```bash
    git clone [https://github.com/lschwe04/sentinel-core.git](https://github.com/lschwe04/sentinel-core.git)
    cd sentinel-core
+
+mTLS-Zertifikate im Ordner certs/ ablegen[cite: 11].
+
+Container starten:
+
+Bash
+docker-compose -f deployments/docker/docker-compose.yml up -d
