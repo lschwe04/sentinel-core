@@ -20,7 +20,7 @@ func main() {
 
 	// Routing Setup (Go 1.22+)
 	mux := http.NewServeMux()
-	
+
 	// API Endpoints für die 5 Reiter
 	mux.HandleFunc("GET /api/v1/hardening/status", handlers.GetHardeningStatus)
 	mux.HandleFunc("POST /api/v1/hardening/trigger", handlers.TriggerHardening)
@@ -30,11 +30,11 @@ func main() {
 	// Middleware: Auth Token validieren (Zero-Trust)
 	secureMux := enforceAuth(mux)
 
-	// TLS Konfiguration (Strikt für mTLS)
-	tlsConfig := &tls.Config{
-		MinVersion:               tls.VersionTLS13,
-		PreferServerCipherSuites: true,
-		// In Production: ClientCAs laden für mTLS Verifizierung der Agenten
+	// mTLS-Konfiguration aufrufen
+	tlsConfig, err := getEnterpriseTLSConfig()
+	if err != nil {
+		slog.Error("Konnte mTLS-Zertifikate nicht laden", "error", err)
+		os.Exit(1)
 	}
 
 	server := &http.Server{
@@ -51,7 +51,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		slog.Info("SentinelCore Hub API startet auf 10.0.0.1:8443")
+		slog.Info("SentinelCore Hub API startet auf 10.0.0.1:8443 (mTLS aktiv)")
 		if err := server.ListenAndServeTLS("certs/hub-cert.pem", "certs/hub-key.pem"); err != nil && err != http.ErrServerClosed {
 			slog.Error("Server Fehler", "error", err)
 			os.Exit(1)
@@ -65,6 +65,23 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		slog.Error("Fehler beim Shutdown", "error", err)
 	}
+}
+
+// getEnterpriseTLSConfig lädt die CA und erzwingt mTLS für alle Agenten-Verbindungen
+func getEnterpriseTLSConfig() (*tls.Config, error) {
+	caCertPool := x509.NewCertPool()
+	caCert, err := os.ReadFile("certs/ca-cert.pem")
+	if err != nil {
+		return nil, err
+	}
+	caCertPool.AppendCertsFromPEM(caCert)
+
+	return &tls.Config{
+		MinVersion:               tls.VersionTLS13,
+		PreferServerCipherSuites: true,
+		ClientAuth:               tls.RequireAndVerifyClientCert, // Erzwingt mTLS für Agenten!
+		ClientCAs:                caCertPool,
+	}, nil
 }
 
 func enforceAuth(next http.Handler) http.Handler {
