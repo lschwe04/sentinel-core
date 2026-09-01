@@ -1,45 +1,26 @@
-# SentinelCore Hub 🛡️
+# 🛡️ SentinelCore Hub
 
-SentinelCore Hub ist die zentrale Management- und Steuerungseinheit für verteilte Enterprise-Infrastrukturen. Das System kombiniert modernste Cloud-Native-Technologien mit kompromisslosen Zero-Trust-Sicherheitsstandards.
+SentinelCore Hub is the central, multi-tenant management and control plane designed for IT service providers and managed service providers (MSPs). It aggregates telemetry, security hardening compliance, and system metrics securely via mTLS and WireGuard.
 
-## 🚀 Kernfunktionen
+## 🚀 Key Features
 
-* **CIS Hardening Management:** Überwachung und automatisierte Durchsetzung von Compliance-Richtlinien (CIS Level 1 & Level 2) inklusive Live-Status-Tracking.
-* **Closed-Loop-Reporting:** Echtzeit-Rückkanal von den Agenten per mTLS zur automatischen Aktualisierung des Compliance-Status in PostgreSQL.
-* **Live-Telemetrie:** Echtzeit-Auswertung von Systemmetriken (CPU, RAM, Disk) angebundener Nodes via `gopsutil`.
-* **Backup-Überwachung:** Zentrales Monitoring von Restic-Snapshots und S3 Object-Lock-Status.
-* **Security Audit Logs:** Echtzeit-Analyse von Sicherheitsereignissen aus Quellen wie Falco und Auditd.
-* **Hybrides Server Provisioning:** Automatisierte Ausrollung über Terraform (Cloud-Provider wie Hetzner) oder direkt via Ansible (On-Premises).
-* **Reaktives UI:** Schlankes Frontend gesteuert über HTMX (mit automatisiertem Live-Polling) und Tailwind CSS ohne schweren JavaScript-Framework-Overhead.
+* **Multi-Tenancy (B2B White-Label):** Manage multiple end-customers cleanly isolated within a single hub instance.
+* **Zero-Trust Communication:** Strict mTLS (TLS 1.3) enforcement and token-based agent enrollment.
+* **Compliance & Hardening:** Continuous tracking of CIS benchmarks and security logs.
+* **Lightweight & Fast:** Built with Go, PostgreSQL (`pgxpool`), HTMX, and Tailwind CSS.
 
----
+## 📦 Quick Start (Docker)
 
-## 🔒 Security & Architektur
-
-* **Zero-Trust mTLS:** Kommunikation zwischen Hub und Agenten erzwingt standardmäßig mTLS (TLS 1.3) mit strikter Zertifikatsvalidierung.
-* **Netzwerk-Isolation:** Anbindung erfolgt ausschließlich über dedizierte WireGuard-VPN-Tunnel.
-* **Moderne Go-Architektur:** Implementiert in Go 1.22+ unter Nutzung des nativen `http.ServeMux` für maximale Performance und minimale Angriffsflächen.
-
----
-
-## 🛠️ Technologie-Stack
-
-* **Backend:** Go, `pgxpool` (PostgreSQL)
-* **Frontend:** HTMX, Tailwind CSS
-* **Infrastruktur & DevOps:** Docker (Distroless Images), Terraform, Ansible, GitHub Actions CI/CD
-
----
-
-## 📦 Schnellstart (Docker Compose)
-
-1. Repository klonen:
-   bash
-   git clone [https://github.com/lschwe04/sentinel-core.git](https://github.com/lschwe04/sentinel-core.git)
+1. Clone the repository:
+   ```bash
+   git clone [https://github.com/your-username/sentinel-core.git](https://github.com/your-username/sentinel-core.git)
    cd sentinel-core
 
-mTLS-Zertifikate im Ordner certs/ ablegen.
+   Run via Docker Compose:
+   docker-compose up -d
 
-Container starten:
+🔐 Security Architecture
+All agent-to-hub communications require mutual TLS (mTLS). Database access is pooled securely using pgxpool with strict tenant scoping.
 
-docker-compose -f deployments/docker/docker-compose.yml up -d
-
+📄 License
+Proprietary / Open Core - See LICENSE file for details.
