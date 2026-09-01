@@ -57,6 +57,15 @@ func RunMigrations() error {
 		source VARCHAR(32),
 		message TEXT
 	);
+
+	CREATE TABLE IF NOT EXISTS audit_logs (
+		id SERIAL PRIMARY KEY,
+		tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
+		actor VARCHAR(255) NOT NULL,
+		action VARCHAR(128) NOT NULL,
+		details TEXT,
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 
 	_, err := Pool.Exec(ctx, query)
