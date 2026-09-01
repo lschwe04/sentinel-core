@@ -1,23 +1,16 @@
 server:
   host: "10.0.0.1"
   port: 8443
-  tls_cert_path: "/certs/hub-cert.pem"
-  tls_key_path: "/certs/hub-key.pem"
-  read_timeout_sec: 5
-  write_timeout_sec: 10
+  read_timeout: "5s"
+  write_timeout: "10s"
 
 database:
   host: "postgres"
   port: 5432
   user: "sentinel"
-  password_env: "DB_PASS" # Wird aus der Umgebungsvariable geladen
   dbname: "sentinel_db"
-  sslmode: "require"
-
-wireguard:
-  interface: "wg0"
-  subnet: "10.0.0.0/24"
+  sslmode: "verify-full"
 
 security:
-  jwt_secret_env: "JWT_SECRET"
-  enable_mtls: true
+  jwt_issuer: "sentinel-core-hub"
+  token_expiration_hours: 8

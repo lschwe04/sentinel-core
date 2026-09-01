@@ -1,0 +1,5 @@
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
+  add_source: true

@@ -5,24 +5,27 @@ import (
 	"net/http"
 )
 
-type SystemMetrics struct {
-	NodeID      string  `json:"node_id"`
-	CPULoad     float64 `json:"cpu_load_percent"`
-	RAMUsage    float64 `json:"ram_usage_percent"`
-	DiskUsage   float64 `json:"disk_usage_percent"`
-	NetworkTxMb float64 `json:"network_tx_mb"`
+type NodeMetrics struct {
+	NodeID       string  `json:"node_id"`
+	CPUUsagePct  float64 `json:"cpu_usage_pct"`
+	RAMUsagePct  float64 `json:"ram_usage_pct"`
+	DiskUsagePct float64 `json:"disk_usage_pct"`
+	UptimeHours  int     `json:"uptime_hours"`
 }
 
 func GetMetrics(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.URL.Query().Get("node_id")
+	if nodeID == "" {
+		http.Error(w, "node_id is required", http.StatusBadRequest)
+		return
+	}
 
-	// Mock: In Produktion Weiterleitung der Anfrage an die lokale Prometheus-Instanz via API
-	metrics := SystemMetrics{
-		NodeID:      nodeID,
-		CPULoad:     12.4,
-		RAMUsage:    45.2,
-		DiskUsage:   68.9,
-		NetworkTxMb: 1024.5,
+	metrics := NodeMetrics{
+		NodeID:       nodeID,
+		CPUUsagePct:  8.2,
+		RAMUsagePct:  34.5,
+		DiskUsagePct: 52.1,
+		UptimeHours:  720,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

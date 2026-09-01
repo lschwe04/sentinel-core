@@ -1,40 +1,35 @@
 terraform {
+  required_version = ">= 1.6.0"
   required_providers {
     hcloud = {
       source  = "hetznercloud/hcloud"
-      version = "~> 1.45"
+      version = "~> 1.45.0"
     }
   }
 }
 
-variable "node_name" {
-  type        = string
-  description = "Name des neuen Nodes, der vom Sentinel-Hub übergeben wird"
-}
-
-variable "provider" {
-  type        = string
-  description = "Infrastruktur-Provider (z.B. hetzner, aws)"
-}
-
 provider "hcloud" {
-  # Token wird aus der Umgebungsvariable HCLOUD_TOKEN gelesen
+  // Token wird über die Umgebungsvariable HCLOUD_TOKEN injiziert
 }
 
-resource "hcloud_server" "sentinel_node" {
+resource "hcloud_server" "node" {
   name        = var.node_name
-  image       = "rocky-9" # Rocky Linux für CIS Compliance
-  server_type = "cx21"
+  image       = "rocky-9"
+  server_type = var.server_type
   location    = "fsn1"
-  
-  # Bootstrapping des WireGuard-Tunnels und des Agents
-  user_data = <<-EOF
-              #!/bin/bash
-              dnf install -y wireguard-tools
-              # Hier folgt der automatisierte WG-Key-Austausch und der Download des sentinel-agent.deb
-              EOF
-}
+  labels = {
+    managed_by = "sentinel-core"
+    env        = var.environment
+  }
 
-output "node_ip" {
-  value = hcloud_server.sentinel_node.ipv4_address
+  # Cloud-Init zur Vorbereitung des Netzwerks und SSH-Keys
+  user_data = <<-EOF
+              #cloud-config
+              package_update: true
+              packages:
+                - wireguard
+                - curl
+              runcmd:
+                - echo "Node bootstrapped by SentinelCore" > /etc/sentinel_bootstrap.log
+              EOF
 }
