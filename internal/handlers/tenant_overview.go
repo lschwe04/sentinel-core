@@ -84,9 +84,10 @@ func RenderTenantOverview(w http.ResponseWriter, r *http.Request) {
 	} else {
 		for _, c := range customers {
 			badgeClass := "bg-green-900 text-green-300 border-green-700"
-			if c.Status == "Warnung" {
+			switch c.Status {
+			case "Warnung":
 				badgeClass = "bg-yellow-900 text-yellow-300 border-yellow-700"
-			} else if c.Status == "Kritisch" {
+			case "Kritisch":
 				badgeClass = "bg-red-900 text-red-300 border-red-700"
 			}
 
