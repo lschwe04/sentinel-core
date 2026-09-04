@@ -25,4 +25,4 @@ jobs:
         run: go test -v -race ./...
 
       - name: Kompilierungstest (Hub bauen)
-        run: go build -v -o sentinel-hub ./cmd/server/main.go
+        run: go build -v -o sentinel-hub ./cmd/hub/main.go
