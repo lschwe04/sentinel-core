@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -26,6 +27,7 @@ var httpClient = &http.Client{
 	Timeout: 5 * time.Second,
 }
 
+// StartAlertEngine startet die periodischen Überprüfungen im Hintergrund
 func StartAlertEngine() {
 	ticker := time.NewTicker(60 * time.Second)
 	go func() {
@@ -184,7 +186,11 @@ func sendGenericWebhook(ctx context.Context, url string, alert AlertPayload) err
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// Body komplett lesen und schließen, um TCP-Verbindungen im Pool zu halten
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("generic webhook returned status: %d", resp.StatusCode)
