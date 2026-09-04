@@ -4,20 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"sentinel-core/internal/db"
 )
-
-type HardeningStatus struct {
-	NodeID     string    `json:"node_id"`
-	CISLevel1  bool      `json:"cis_level_1_compliant"`
-	CISLevel2  bool      `json:"cis_level_2_compliant"`
-	LastScan   time.Time `json:"last_scan"`
-	OpenIssues int       `json:"open_issues"`
-}
 
 type HardeningReport struct {
 	NodeID     string `json:"node_id"`
@@ -26,7 +19,6 @@ type HardeningReport struct {
 	OpenIssues int    `json:"open_issues"`
 }
 
-// HandleHardeningReport empfängt den geschützten mTLS-Report des Agenten (Closed Loop)
 func HandleHardeningReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -39,10 +31,9 @@ func HandleHardeningReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Status in der PostgreSQL Datenbank aktualisieren
 	query := `
 		INSERT INTO hardening_status (node_id, cis_level_2_compliant, last_scan, open_issues)
 		VALUES ($1, $2, CURRENT_TIMESTAMP, $3)
@@ -51,33 +42,33 @@ func HandleHardeningReport(w http.ResponseWriter, r *http.Request) {
 	`
 	_, err := db.Pool.Exec(ctx, query, report.NodeID, report.Success, report.OpenIssues)
 	if err != nil {
-		slog.Error("Fehler beim Speichern des Hardening-Reports in DB", "error", err)
+		slog.Error("Fehler beim Speichern des Hardening-Reports", "error", err)
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
 
-	slog.Info("Hardening-Report erfolgreich verarbeitet", "node_id", report.NodeID, "success", report.Success)
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status": "report_received"}`))
 }
 
-// RenderHardeningWidget liefert das HTMX-Fragment mit Live-Polling für den Status
 func RenderHardeningWidget(w http.ResponseWriter, r *http.Request) {
-	nodeID := r.URL.Query().Get("node_id")
-	if nodeID == "" {
-		nodeID = "node-local-docker"
+	rawNodeID := r.URL.Query().Get("node_id")
+	if rawNodeID == "" {
+		rawNodeID = "node-local-docker"
 	}
+	safeNodeID := html.EscapeString(rawNodeID)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 
 	var compliant bool
 	var openIssues int
-	var statusText = "Läuft / Wartet auf Callback..."
+	var statusText = "Wartet auf Prüfung..."
 	var badgeColor = "text-yellow-400"
 
 	query := `SELECT cis_level_2_compliant, open_issues FROM hardening_status WHERE node_id = $1`
-	err := db.Pool.QueryRow(ctx, query, nodeID).Scan(&compliant, &openIssues)
+	err := db.Pool.QueryRow(ctx, query, safeNodeID).Scan(&compliant, &openIssues)
 
 	if err == nil {
 		if compliant {
@@ -90,9 +81,8 @@ func RenderHardeningWidget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// HTMX-Polling: Fragt alle 3 Sekunden den Status dieses Widgets neu ab
 	fmt.Fprintf(w, `
-		<div id="hardening-widget" hx-get="/api/v1/ui/hardening/widget?node_id=%s" hx-trigger="every 3s" hx-swap="outerHTML"
+		<div id="hardening-widget" hx-get="/api/v1/ui/hardening/widget?node_id=%s" hx-trigger="every 5s" hx-swap="outerHTML"
 			 class="border border-gray-700 rounded-lg p-6 bg-gray-800">
 			<h2 class="text-xl font-semibold mb-4">🛡️ CIS Hardening Management</h2>
 			<p class="text-gray-400 mb-6">Node: <span class="font-mono text-blue-400">%s</span></p>
@@ -106,5 +96,5 @@ func RenderHardeningWidget(w http.ResponseWriter, r *http.Request) {
 				CIS Hardening (Level 2) jetzt ausführen
 			</button>
 		</div>
-	`, nodeID, nodeID, badgeColor, statusText)
+	`, safeNodeID, safeNodeID, badgeColor, statusText)
 }

@@ -6,31 +6,41 @@ import (
 	"log/slog"
 	"net/http"
 	"os/exec"
+	"regexp"
 	"time"
 )
 
 type ProvisionRequest struct {
-	Provider       string `json:"provider"` // z.B. "hetzner", "aws", oder "local"
+	Provider       string `json:"provider"` // "local" oder "hetzner"
 	NodeName       string `json:"node_name"`
-	NodeIP         string `json:"node_ip,omitempty"` // Relevant für lokale Server
-	HardeningLevel string `json:"hardening_level"`   // "level1" oder "level2"
+	NodeIP         string `json:"node_ip,omitempty"`
+	HardeningLevel string `json:"hardening_level"` // "level1" oder "level2"
 }
 
+var safeNameRegex = regexp.MustCompile(`^[a-zA-Z0-9\-_]+$`)
+
 func TriggerProvisioning(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	var req ProvisionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid payload", http.StatusBadRequest)
 		return
 	}
 
-	// Standardwert setzen, falls kein Level im Request übergeben wurde
+	if !safeNameRegex.MatchString(req.NodeName) {
+		http.Error(w, `{"error": "Invalid node_name format"}`, http.StatusBadRequest)
+		return
+	}
+
 	if req.HardeningLevel == "" {
 		req.HardeningLevel = "level1"
 	}
 
-	// Hybride Unterscheidung
 	if req.Provider == "local" {
-		// Lokaler Weg: Terraform wird übersprungen, Ansible übernimmt direkt das On-Premises-Setup und Härtung
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 			defer cancel()
@@ -39,25 +49,24 @@ func TriggerProvisioning(w http.ResponseWriter, r *http.Request) {
 				"-e", "target_host="+req.NodeIP,
 				"-e", "hardening_level="+req.HardeningLevel)
 
-			if err := cmd.Run(); err != nil {
-				slog.Error("Lokales On-Premises Provisioning & Hardening fehlgeschlagen", "node", req.NodeName, "error", err)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				slog.Error("On-Premises Provisioning fehlgeschlagen", "node", req.NodeName, "error", err, "output", string(output))
 				return
 			}
-			slog.Info("Lokaler Node erfolgreich angebunden und gehärtet", "node", req.NodeName, "hardening", req.HardeningLevel)
+			slog.Info("Lokaler Node erfolgreich eingerichtet und gehärtet", "node", req.NodeName)
 		}()
 
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		w.Write([]byte(`{"status": "local_provisioning_started", "node": "` + req.NodeName + `", "hardening": "` + req.HardeningLevel + `"}`))
+		w.Write([]byte(`{"status": "local_provisioning_started", "node": "` + req.NodeName + `"}`))
 		return
 	}
 
-	// Cloud-Weg via Terraform (inklusive Übergabe des Hardening-Levels)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "/usr/bin/terraform", "apply", "-auto-approve",
 		"-var", "node_name="+req.NodeName,
-		"-var", "provider="+req.Provider,
 		"-var", "hardening_level="+req.HardeningLevel)
 	cmd.Dir = "/opt/sentinel/deployments/terraform"
 
@@ -66,9 +75,10 @@ func TriggerProvisioning(w http.ResponseWriter, r *http.Request) {
 			slog.Error("Cloud Provisioning fehlgeschlagen", "node", req.NodeName, "error", err, "output", string(output))
 			return
 		}
-		slog.Info("Cloud Provisioning & Hardening erfolgreich", "node", req.NodeName, "hardening", req.HardeningLevel)
+		slog.Info("Cloud Provisioning erfolgreich abgeschlossen", "node", req.NodeName)
 	}()
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	w.Write([]byte(`{"status": "cloud_provisioning_started", "node": "` + req.NodeName + `", "hardening": "` + req.HardeningLevel + `"}`))
+	w.Write([]byte(`{"status": "cloud_provisioning_started", "node": "` + req.NodeName + `"}`))
 }

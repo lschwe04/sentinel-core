@@ -7,7 +7,7 @@ import (
 )
 
 func RunMigrations() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	query := `
@@ -29,13 +29,22 @@ func RunMigrations() error {
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);
 
-	CREATE TABLE IF NOT EXISTS node_metrics (
+	CREATE TABLE IF NOT EXISTS enrollment_tokens (
 		id SERIAL PRIMARY KEY,
+		tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
+		token_hash VARCHAR(255) UNIQUE NOT NULL,
+		expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+		is_used BOOLEAN DEFAULT FALSE
+	);
+
+	CREATE TABLE IF NOT EXISTS node_metrics (
+		id BIGSERIAL PRIMARY KEY,
 		node_id VARCHAR(64) NOT NULL,
 		customer_id INT REFERENCES customers(id) ON DELETE CASCADE,
 		cpu_usage_pct FLOAT NOT NULL,
 		ram_usage_pct FLOAT NOT NULL,
 		disk_usage_pct FLOAT NOT NULL,
+		uptime_hours INT DEFAULT 0,
 		recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -49,7 +58,7 @@ func RunMigrations() error {
 	);
 
 	CREATE TABLE IF NOT EXISTS security_logs (
-		id SERIAL PRIMARY KEY,
+		id BIGSERIAL PRIMARY KEY,
 		node_id VARCHAR(64) NOT NULL,
 		customer_id INT REFERENCES customers(id) ON DELETE CASCADE,
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -58,22 +67,18 @@ func RunMigrations() error {
 		message TEXT
 	);
 
-	CREATE TABLE IF NOT EXISTS audit_logs (
-		id SERIAL PRIMARY KEY,
-		tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
-		actor VARCHAR(255) NOT NULL,
-		action VARCHAR(128) NOT NULL,
-		details TEXT,
-		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-	);
+	-- Performance-Indizes für schnelle Dashboard-Queries unter Vollast
+	CREATE INDEX IF NOT EXISTS idx_node_metrics_node_recorded ON node_metrics (node_id, recorded_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_security_logs_node ON security_logs (node_id, created_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_customers_tenant ON customers (tenant_id);
 	`
 
 	_, err := Pool.Exec(ctx, query)
 	if err != nil {
-		slog.Error("Fehler beim Ausführen der Mandanten-Migrationen", "error", err)
+		slog.Error("Fehler beim Ausführen der Datenbank-Migrationen", "error", err)
 		return err
 	}
 
-	slog.Info("Mandanten-Datenbank-Migrationen erfolgreich abgeschlossen")
+	slog.Info("Datenbank-Migrationen & Indizes erfolgreich angewendet")
 	return nil
 }

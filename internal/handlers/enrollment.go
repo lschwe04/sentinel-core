@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"sentinel-core/internal/db"
+	"os"
 	"time"
+
+	"sentinel-core/internal/db"
 )
 
 type EnrollRequest struct {
@@ -26,27 +28,31 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// In Produktion: Validierung des EnrollTokens gegen eine Tenant-/Setup-Tabelle
-	if req.EnrollToken != "systemhaus-master-secret-token" {
-		http.Error(w, "Invalid enrollment token", http.StatusUnauthorized)
+	expectedMasterToken := os.Getenv("SYSTEMHAUS_ENROLL_SECRET")
+	if expectedMasterToken == "" {
+		expectedMasterToken = "default-secure-enroll-key"
+	}
+
+	if req.EnrollToken != expectedMasterToken {
+		http.Error(w, `{"error": "Invalid or expired enrollment token"}`, http.StatusUnauthorized)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Initialen Hardening-Status für den neuen Node anlegen
 	query := `
 		INSERT INTO hardening_status (node_id, customer_id, cis_level_1_compliant, last_scan, open_issues)
 		VALUES ($1, $2, false, CURRENT_TIMESTAMP, 0)
-		ON CONFLICT (node_id) DO NOTHING
+		ON CONFLICT (node_id) DO UPDATE SET last_scan = CURRENT_TIMESTAMP
 	`
 	_, err := db.Pool.Exec(ctx, query, req.NodeID, req.CustomerID)
 	if err != nil {
-		http.Error(w, "Database error during enrollment", http.StatusInternalServerError)
+		http.Error(w, `{"error": "Database error during enrollment"}`, http.StatusInternalServerError)
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":  "enrolled_successfully",
