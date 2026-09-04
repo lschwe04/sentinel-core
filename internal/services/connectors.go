@@ -27,11 +27,11 @@ func (z *ZammadConnector) Dispatch(ctx context.Context, alert AlertPayload, conf
 		"title":       fmt.Sprintf("[Sentinel] %s auf Node %s", alert.Severity, alert.NodeID),
 		"group":       "Users",
 		"customer_id": fmt.Sprintf("%d", alert.CustomerID),
-		"article": map[string]string{
-			"subject":  "Automatischer Sentinel Alert",
+		"article": map[string]interface{}{
+			"subject":  "Automatischer Sentinel Security Alert",
 			"body":     fmt.Sprintf("Metrik: %s\nWert: %.2f\nNachricht: %s", alert.Metric, alert.Value, alert.Message),
 			"type":     "note",
-			"internal": "false",
+			"internal": false,
 		},
 	}
 
@@ -40,9 +40,9 @@ func (z *ZammadConnector) Dispatch(ctx context.Context, alert AlertPayload, conf
 		return fmt.Errorf("zammad payload marshal failed: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, config.WebhookURL, bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, config.WebhookURL+"/api/v1/tickets", bytes.NewBuffer(body))
 	if err != nil {
-		return err
+		return fmt.Errorf("zammad request creation failed: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -52,12 +52,12 @@ func (z *ZammadConnector) Dispatch(ctx context.Context, alert AlertPayload, conf
 
 	resp, err := z.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("zammad request failed: %w", err)
+		return fmt.Errorf("zammad http dispatch failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("zammad API returned status: %d", resp.StatusCode)
+		return fmt.Errorf("zammad returned error status: %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -67,25 +67,34 @@ type TeamsConnector struct {
 }
 
 func (t *TeamsConnector) Dispatch(ctx context.Context, alert AlertPayload, config IntegrationConfig) error {
-	payload := map[string]string{
-		"text": fmt.Sprintf("🚨 **%s**\nNode: %s\nMessage: %s", alert.Severity, alert.NodeID, alert.Message),
+	card := map[string]interface{}{
+		"@type":      "MessageCard",
+		"@context":   "http://schema.org/extensions",
+		"summary":    "Sentinel Security Alert",
+		"themeColor": "FF0000",
+		"title":      fmt.Sprintf("🚨 Sentinel Alert: %s (%s)", alert.Severity, alert.NodeID),
+		"text":       fmt.Sprintf("**Nachricht:** %s\n\n*Metrik:* %s = %.2f\n*Zeit:* %s", alert.Message, alert.Metric, alert.Value, alert.Timestamp.Format("15:04:05 MST")),
 	}
-	body, _ := json.Marshal(payload)
+
+	body, err := json.Marshal(card)
+	if err != nil {
+		return fmt.Errorf("teams payload marshal failed: %w", err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, config.WebhookURL, bytes.NewBuffer(body))
 	if err != nil {
-		return err
+		return fmt.Errorf("teams request creation failed: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("teams webhook failed: %w", err)
+		return fmt.Errorf("teams http dispatch failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("teams API returned status: %d", resp.StatusCode)
+		return fmt.Errorf("teams returned error status: %d", resp.StatusCode)
 	}
 	return nil
 }
