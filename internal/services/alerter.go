@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -19,6 +20,10 @@ type AlertPayload struct {
 	Severity   string    `json:"severity"`
 	Message    string    `json:"message"`
 	Timestamp  time.Time `json:"timestamp"`
+}
+
+var httpClient = &http.Client{
+	Timeout: 5 * time.Second,
 }
 
 func StartAlertEngine() {
@@ -43,28 +48,31 @@ func checkThresholds() {
 	`
 	rows, err := db.Pool.Query(ctx, query)
 	if err != nil {
+		slog.Error("Threshold query failed", "error", err)
 		return
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var nodeID string
-		var customerID int
+		var tenantID int
 		var cpu, ram float64
-		if err := rows.Scan(&nodeID, &customerID, &cpu, &ram); err == nil {
-			slog.Warn("ALERT: Critical system load detected!", "node_id", nodeID, "cpu", cpu, "ram", ram)
-
-			// 🚀 NEU: Direkt an das Systemhaus/Kunden via Webhook melden
-			dispatchWebhook(customerID, AlertPayload{
-				NodeID:     nodeID,
-				CustomerID: customerID,
-				Metric:     "CPU/RAM",
-				Value:      cpu,
-				Severity:   "CRITICAL",
-				Message:    "Critical system load detected on node",
-				Timestamp:  time.Now().UTC(),
-			})
+		if err := rows.Scan(&nodeID, &tenantID, &cpu, &ram); err != nil {
+			slog.Error("Failed to scan threshold row", "error", err)
+			continue
 		}
+
+		slog.Warn("ALERT: Critical system load detected!", "node_id", nodeID, "cpu", cpu, "ram", ram)
+
+		dispatchAlertToIntegrations(tenantID, AlertPayload{
+			NodeID:     nodeID,
+			CustomerID: tenantID,
+			Metric:     "CPU/RAM",
+			Value:      cpu,
+			Severity:   "CRITICAL",
+			Message:    fmt.Sprintf("Critical load: CPU %.1f%%, RAM %.1f%%", cpu, ram),
+			Timestamp:  time.Now().UTC(),
+		})
 	}
 }
 
@@ -80,62 +88,106 @@ func checkDeadAgents() {
 	`
 	rows, err := db.Pool.Query(ctx, query)
 	if err != nil {
+		slog.Error("Dead agents query failed", "error", err)
 		return
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var nodeID string
-		var customerID int
+		var tenantID int
 		var lastSeen time.Time
-		if err := rows.Scan(&nodeID, &customerID, &lastSeen); err == nil {
-			slog.Error("ALERT: Agent is offline!", "node_id", nodeID, "last_seen", lastSeen)
-
-			// 🚀 NEU: Offline-Status an das Systemhaus melden
-			dispatchWebhook(customerID, AlertPayload{
-				NodeID:     nodeID,
-				CustomerID: customerID,
-				Metric:     "HEARTBEAT",
-				Value:      0,
-				Severity:   "ERROR",
-				Message:    "Agent is offline (no heartbeat)",
-				Timestamp:  time.Now().UTC(),
-			})
+		if err := rows.Scan(&nodeID, &tenantID, &lastSeen); err != nil {
+			slog.Error("Failed to scan dead agent row", "error", err)
+			continue
 		}
+
+		slog.Error("ALERT: Agent is offline!", "node_id", nodeID, "last_seen", lastSeen)
+
+		dispatchAlertToIntegrations(tenantID, AlertPayload{
+			NodeID:     nodeID,
+			CustomerID: tenantID,
+			Metric:     "HEARTBEAT",
+			Value:      0,
+			Severity:   "ERROR",
+			Message:    fmt.Sprintf("Agent offline (last seen: %s)", lastSeen.Format(time.RFC3339)),
+			Timestamp:  time.Now().UTC(),
+		})
 	}
 }
 
-// NEU: Holt die Kunden-Webhook-URL aus der DB und feuert den Alarm asynchron ab
-func dispatchWebhook(customerID int, alert AlertPayload) {
+func dispatchAlertToIntegrations(tenantID int, alert AlertPayload) {
+	if tenantID == 0 {
+		return
+	}
+
 	go func() {
-		subCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		var webhookURL string
-		// Beispiel-Query: Holt die hinterlegte Webhook-URL des Kunden/Systemhauses
-		query := `SELECT alert_webhook_url FROM customers WHERE id = $1`
-		err := db.Pool.QueryRow(subCtx, query, customerID).Scan(&webhookURL)
-		if err != nil || webhookURL == "" {
-			return // Kein externer Webhook konfiguriert -> Nur interner Log reicht
-		}
-
-		body, err := json.Marshal(alert)
+		query := `
+			SELECT integration_type, webhook_url, COALESCE(api_token, '') 
+			FROM tenant_integrations 
+			WHERE tenant_id = $1 AND is_active = TRUE
+		`
+		rows, err := db.Pool.Query(ctx, query, tenantID)
 		if err != nil {
+			slog.Error("Failed to load tenant integrations", "tenant_id", tenantID, "error", err)
 			return
 		}
+		defer rows.Close()
 
-		req, err := http.NewRequestWithContext(subCtx, http.MethodPost, webhookURL, bytes.NewBuffer(body))
-		if err != nil {
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
+		for rows.Next() {
+			var cfg IntegrationConfig
+			if err := rows.Scan(&cfg.Type, &cfg.WebhookURL, &cfg.APIToken); err != nil {
+				slog.Error("Failed to scan integration config", "error", err)
+				continue
+			}
 
-		client := &http.Client{Timeout: 3 * time.Second}
-		resp, err := client.Do(req)
-		if err != nil {
-			slog.Warn("Webhook dispatch failed", "customer_id", customerID, "error", err)
-			return
+			if err := executeConnector(ctx, cfg, alert); err != nil {
+				slog.Warn("Integration dispatch failed",
+					"tenant_id", tenantID,
+					"type", cfg.Type,
+					"error", err,
+				)
+			}
 		}
-		defer resp.Body.Close()
 	}()
+}
+
+func executeConnector(ctx context.Context, cfg IntegrationConfig, alert AlertPayload) error {
+	switch cfg.Type {
+	case "zammad":
+		connector := &ZammadConnector{client: httpClient}
+		return connector.Dispatch(ctx, alert, cfg)
+	case "teams":
+		connector := &TeamsConnector{client: httpClient}
+		return connector.Dispatch(ctx, alert, cfg)
+	default:
+		return sendGenericWebhook(ctx, cfg.WebhookURL, alert)
+	}
+}
+
+func sendGenericWebhook(ctx context.Context, url string, alert AlertPayload) error {
+	body, err := json.Marshal(alert)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("generic webhook returned status: %d", resp.StatusCode)
+	}
+	return nil
 }
