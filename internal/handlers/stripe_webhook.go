@@ -1,3 +1,4 @@
+// internal/handlers/stripe_webhook.go
 package handlers
 
 import (
@@ -5,12 +6,14 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"sentinel-core/internal/db"
 	"time"
-	// Optional oder native JSON-Map parsing
+
+	"github.com/stripe/stripe-go/v74/webhook"
 )
 
-// Einfacher Webhook-Empfänger für Stripe Events
+// HandleStripeWebhook verarbeitet Stripe-Events mit scharfer Webhook-Signaturprüfung für den Live-Betrieb
 func HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -25,23 +28,32 @@ func HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// In Produktion: Hier via stripe-go Signature prüfen!
-	// event, err := webhook.ConstructEvent(payload, r.Header.Get("Stripe-Signature"), endpointSecret)
-
-	var event map[string]interface{}
-	if err := json.Unmarshal(payload, &event); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+	// Webhook-Secret aus Umgebungsvariable laden
+	endpointSecret := os.Getenv("STRIPE_WEBHOOK_SECRET")
+	if endpointSecret == "" {
+		http.Error(w, "CRITICAL: STRIPE_WEBHOOK_SECRET is not configured", http.StatusInternalServerError)
 		return
 	}
 
-	eventType, _ := event["type"].(string)
-	dataObject, _ := event["data"].(map[string]interface{})
-	objectMap, _ := dataObject["object"].(map[string]interface{})
+	// Live-Signaturprüfung via Stripe SDK
+	signatureHeader := r.Header.Get("Stripe-Signature")
+	event, err := webhook.ConstructEvent(payload, signatureHeader, endpointSecret)
+	if err != nil {
+		http.Error(w, "Webhook signature verification failed", http.StatusBadRequest)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	switch eventType {
+	// Event-Daten aus dem Roh-Payload des validierten Events extrahieren
+	var objectMap map[string]interface{}
+	if err := json.Unmarshal(event.Data.Raw, &objectMap); err != nil {
+		http.Error(w, "Invalid event data JSON", http.StatusBadRequest)
+		return
+	}
+
+	switch event.Type {
 	case "customer.subscription.created", "customer.subscription.updated":
 		customerID, _ := objectMap["customer"].(string)
 		status, _ := objectMap["status"].(string) // z.B. "active", "past_due", "canceled"
