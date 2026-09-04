@@ -11,6 +11,10 @@ func RunMigrations() error {
 	defer cancel()
 
 	query := `
+	-- Erweiterungen für UUID-Generierung
+	CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+	-- Basis-Mandantenstruktur
 	CREATE TABLE IF NOT EXISTS tenants (
 		id SERIAL PRIMARY KEY,
 		name VARCHAR(255) NOT NULL,
@@ -29,6 +33,22 @@ func RunMigrations() error {
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);
 
+	-- RBAC (Rollensystem)
+	CREATE TABLE IF NOT EXISTS roles (
+		id SERIAL PRIMARY KEY,
+		name VARCHAR(32) UNIQUE NOT NULL,
+		description TEXT
+	);
+
+	CREATE TABLE IF NOT EXISTS user_roles (
+		user_id UUID NOT NULL,
+		tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
+		customer_id INT REFERENCES customers(id) ON DELETE CASCADE,
+		role_id INT REFERENCES roles(id) ON DELETE RESTRICT,
+		PRIMARY KEY (user_id, tenant_id)
+	);
+
+	-- Agenten & Security
 	CREATE TABLE IF NOT EXISTS enrollment_tokens (
 		id SERIAL PRIMARY KEY,
 		tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
@@ -67,10 +87,21 @@ func RunMigrations() error {
 		message TEXT
 	);
 
-	-- Performance-Indizes für schnelle Dashboard-Queries unter Vollast
-	CREATE INDEX IF NOT EXISTS idx_node_metrics_node_recorded ON node_metrics (node_id, recorded_at DESC);
-	CREATE INDEX IF NOT EXISTS idx_security_logs_node ON security_logs (node_id, created_at DESC);
+	-- Seed: Systemhaus-Standardrollen
+	INSERT INTO roles (name, description) VALUES
+		('syshaus_admin', 'Vollzugriff auf Systemhaus- und Mandanten-Ebene'),
+		('syshaus_tech', 'Techniker mit Lese- und Schreibrechten für Kundensysteme'),
+		('customer_view', 'Lesezugriff beschränkt auf spezifische Endkunden')
+	ON CONFLICT (name) DO NOTHING;
+
+	-- Performance- & Relations-Indizes
 	CREATE INDEX IF NOT EXISTS idx_customers_tenant ON customers (tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_user_roles_lookup ON user_roles (user_id, tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_enrollment_tokens_tenant ON enrollment_tokens (tenant_id);
+	CREATE INDEX IF NOT EXISTS idx_node_metrics_node_recorded ON node_metrics (node_id, recorded_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_node_metrics_customer ON node_metrics (customer_id);
+	CREATE INDEX IF NOT EXISTS idx_security_logs_node ON security_logs (node_id, created_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_security_logs_customer ON security_logs (customer_id);
 	`
 
 	_, err := Pool.Exec(ctx, query)
@@ -79,6 +110,6 @@ func RunMigrations() error {
 		return err
 	}
 
-	slog.Info("Datenbank-Migrationen & Indizes erfolgreich angewendet")
+	slog.Info("Datenbank-Migrationen, RBAC-Initialisierung & Indizes erfolgreich angewendet")
 	return nil
 }
