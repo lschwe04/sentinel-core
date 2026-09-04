@@ -58,9 +58,15 @@ func EnforceTenantAndRBAC(requiredRole string, jwtSecret string) func(http.Handl
 			tenantID, _ := claims["tenant_id"].(string)
 			customerID := r.URL.Query().Get("customer_id")
 
+			// NEU: Anti-Spoofing-Prüfung (verhindert das Unterjubeln fremder Tenant-Header)
+			headerTenantID := r.Header.Get("X-Tenant-ID")
+			if headerTenantID != "" && headerTenantID != tenantID && userRole != "admin" {
+				http.Error(w, `{"error": "Forbidden: Tenant cross-contamination attempt detected"}`, http.StatusForbidden)
+				return
+			}
+
 			// Wenn ein spezifischer Endkunde abgefragt wird, prüfen ob der Tenant berechtigt ist
 			if customerID != "" && userRole != "admin" {
-				// Hier könnte in Produktion ein DB-Lookup erfolgen, ob Tenant den Kunden besitzt
 				if tenantID == "" {
 					http.Error(w, `{"error": "Tenant context missing"}`, http.StatusBadRequest)
 					return
