@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SentinelCore Live Dashboard</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://unpkg.com/htmx.org/dist/ext/sse.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white p-8">
+
+    <h1 class="text-2xl font-bold mb-6">Live Node Telemetry</h1>
+
+    <!-- 
+      hx-ext="sse": Aktiviert die Server-Sent Events Extension
+      sse-connect: Verbindet sich mit dem Endpunkt aus handlers/sse.go
+      sse-swap: Lauscht auf das Event "metric_update" und ersetzt das HTML
+    -->
+    <div hx-ext="sse" 
+         sse-connect="/api/v1/stream/metrics?tenant_id=tenant-123" 
+         class="grid grid-cols-1 md:grid-cols-3 gap-4"
+         id="node-grid">
+        
+        <!-- Updates für "node-1" werden durch SSE automatisch hier injiziert -->
+        <div id="node-card-node-1" sse-swap="metric_update">
+            <div class="p-4 bg-gray-800 border border-gray-700 rounded-lg animate-pulse">
+                <p class="text-gray-400">Waiting for agent telemetry...</p>
+            </div>
+        </div>
+
+    </div>
+
+</body>
+</html>
