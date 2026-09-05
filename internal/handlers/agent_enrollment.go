@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -35,47 +36,76 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var req EnrollmentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error": "Invalid request payload"}`, http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.EnrollmentToken == "" {
+		http.Error(w, `{"error": "Invalid request payload or missing token"}`, http.StatusBadRequest)
 		return
 	}
 
-	// 1. Prüfen ob das Enrollment-Token des Systemhauses gültig ist
-	var customerID string
-	var isValid bool
-	err := db.Pool.QueryRow(ctx, `
-		SELECT customer_id, is_active FROM enrollment_tokens WHERE token = $1
-	`, req.EnrollmentToken).Scan(&customerID, &isValid)
+	// Token Hashing zur sicheren Validierung gegen das Datenbankschema (token_hash)
+	tokenHashBytes := sha256.Sum256([]byte(req.EnrollmentToken))
+	tokenHash := hex.EncodeToString(tokenHashBytes[:])
 
-	if err != nil || !isValid {
-		http.Error(w, `{"error": "Invalid or expired system house enrollment token"}`, http.StatusUnauthorized)
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		http.Error(w, `{"error": "Internal database error"}`, http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	var tokenID int
+	var tenantID int
+	var isUsed bool
+	var expiresAt time.Time
+
+	query := `
+		SELECT id, tenant_id, is_used, expires_at 
+		FROM enrollment_tokens 
+		WHERE token_hash = $1 
+		FOR UPDATE
+	`
+	err = tx.QueryRow(ctx, query, tokenHash).Scan(&tokenID, &tenantID, &isUsed, &expiresAt)
+	if err != nil || isUsed || time.Now().After(expiresAt) {
+		http.Error(w, `{"error": "Invalid, expired, or already consumed enrollment token"}`, http.StatusUnauthorized)
 		return
 	}
 
-	// 2. Eindeutigen Agenten-Hash generieren (Hardware-Fingerprint)
+	// Token als verbraucht markieren (Einmalverwendung erzwingen)
+	_, err = tx.Exec(ctx, `UPDATE enrollment_tokens SET is_used = TRUE WHERE id = $1`, tokenID)
+	if err != nil {
+		http.Error(w, `{"error": "Failed to update token status"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Eindeutigen Agenten-ID via Hardware-Fingerprint generieren
 	hasher := sha256.New()
 	hasher.Write([]byte(req.HardwareUUID + req.Hostname))
 	agentID := hex.EncodeToString(hasher.Sum(nil))[:16]
 
-	// Einmaliges mTLS-Secret für zukünftige Heartbeats erzeugen
+	// Kryptografisch sichere Zufallszahlen für das mTLS Shared Secret
 	randBytes := make([]byte, 32)
-	// (In Realimplementation crypto/rand nutzen)
+	if _, err := rand.Read(randBytes); err != nil {
+		http.Error(w, `{"error": "Failed to generate secure credentials"}`, http.StatusInternalServerError)
+		return
+	}
 	sharedSecret := hex.EncodeToString(randBytes)
 
-	// 3. Agent in Datenbank persistieren
-	_, err = db.Pool.Exec(ctx, `
-		INSERT INTO registered_agents (agent_id, customer_id, hostname, os_version, hardware_uuid, secret_hash, status, registered_at)
-		VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', NOW())
-		ON CONFLICT (agent_id) DO UPDATE 
-		SET last_seen = NOW(), status = 'ACTIVE'
-	`, agentID, customerID, req.Hostname, req.OSVersion, req.HardwareUUID, sharedSecret)
-
+	// Agent in Datenbank persistieren
+	_, err = tx.Exec(ctx, `
+		INSERT INTO hardening_status (node_id, customer_id, cis_level_1_compliant, cis_level_2_compliant, open_issues)
+		VALUES ($1, NULL, FALSE, FALSE, 0)
+		ON CONFLICT (node_id) DO NOTHING
+	`, agentID)
 	if err != nil {
-		http.Error(w, `{"error": "Database error registering agent"}`, http.StatusInternalServerError)
+		http.Error(w, `{"error": "Database error registering agent hardware record"}`, http.StatusInternalServerError)
 		return
 	}
 
-	// Audit Log für das Systemhaus
+	if err := tx.Commit(ctx); err != nil {
+		http.Error(w, `{"error": "Transaction commit failure"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Audit Log asynchron schreiben
 	go func() {
 		_, _ = db.Pool.Exec(context.Background(),
 			`INSERT INTO security_logs (node_id, severity, source, message) VALUES ($1, $2, $3, $4)`,
@@ -84,6 +114,7 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(EnrollmentResponse{
 		AgentID:      agentID,
 		SharedSecret: sharedSecret,

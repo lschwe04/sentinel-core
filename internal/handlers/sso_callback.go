@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -57,6 +58,12 @@ func HandleMicrosoftCallback(w http.ResponseWriter, r *http.Request) {
 	clientSecret := os.Getenv("AZURE_CLIENT_SECRET")
 	redirectURL := os.Getenv("AZURE_REDIRECT_URL")
 
+	if tenantID == "" || clientID == "" || clientSecret == "" || redirectURL == "" {
+		slog.Error("Azure SSO environment variables are not fully configured")
+		http.Error(w, "Internal Server Error: SSO configuration missing", http.StatusInternalServerError)
+		return
+	}
+
 	tokenURL := fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", tenantID)
 
 	formValues := strings.NewReader(fmt.Sprintf(
@@ -107,11 +114,22 @@ func HandleMicrosoftCallback(w http.ResponseWriter, r *http.Request) {
 		userEmail = msUser.UserPrincipalName
 	}
 
-	// 4. Session erstellen / Interne Berechtigung prüfen
-	secManager, err := auth.NewSecurityManager([]byte(os.Getenv("CA_CERT_PEM")), []byte(os.Getenv("CA_KEY_PEM")), os.Getenv("JWT_SECRET"))
+	// 4. Sichere Initialisierung des SecurityManagers ohne unsichere Hardcoded-Fallbacks
+	caCertEnv := os.Getenv("CA_CERT_PEM")
+	caKeyEnv := os.Getenv("CA_KEY_PEM")
+	jwtSecretEnv := os.Getenv("JWT_SECRET")
+
+	if jwtSecretEnv == "" {
+		slog.Error("CRITICAL: JWT_SECRET environment variable is missing")
+		http.Error(w, "Internal Server Error: Authentication configuration error", http.StatusInternalServerError)
+		return
+	}
+
+	secManager, err := auth.NewSecurityManager([]byte(caCertEnv), []byte(caKeyEnv), jwtSecretEnv)
 	if err != nil {
-		// Fallback für Beta: Internen Secret Token nutzen
-		secManager, _ = auth.NewSecurityManager([]byte("DUMMY_CA"), []byte("DUMMY_KEY"), "fallback-secret-key-change-me")
+		slog.Error("Failed to initialize SecurityManager", "error", err)
+		http.Error(w, "Internal Server Error: Security initialization failed", http.StatusInternalServerError)
+		return
 	}
 
 	sessionToken, err := secManager.GenerateSignedJWT(msUser.ID, "systemhaus-dach", "technician", 8*time.Hour)
@@ -128,7 +146,7 @@ func HandleMicrosoftCallback(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
-		Path:     yamlPathSanitize("/"),
+		Path:     "/",
 	})
 
 	// Audit Log schreiben
@@ -139,10 +157,6 @@ func HandleMicrosoftCallback(w http.ResponseWriter, r *http.Request) {
 		)
 	}()
 
-	// Weiterleitung zum Haupt-Dashboard des Systemhauses
+	// Weiterleitung zum Dashboard
 	http.Redirect(w, r, "/dashboard.html", http.StatusTemporaryRedirect)
-}
-
-func yamlPathSanitize(p string) string {
-	return strings.ReplaceAll(p, "\n", "")
 }

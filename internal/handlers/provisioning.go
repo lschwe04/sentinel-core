@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"os/exec"
 	"regexp"
@@ -41,6 +42,16 @@ func TriggerProvisioning(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Provider == "local" {
+		if req.NodeIP == "" {
+			http.Error(w, `{"error": "node_ip is required for local provisioning"}`, http.StatusBadRequest)
+			return
+		}
+		// Validierung der IP-Adresse gegen Injection und Fehlkonfiguration
+		if net.ParseIP(req.NodeIP) == nil {
+			http.Error(w, `{"error": "Invalid node_ip format"}`, http.StatusBadRequest)
+			return
+		}
+
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 			defer cancel()
