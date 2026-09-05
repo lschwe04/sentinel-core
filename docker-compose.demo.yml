@@ -1,0 +1,43 @@
+version: '3.8'
+services:
+  hub:
+    build: .
+    ports:
+      - "8443:8443"
+    environment:
+      - DATABASE_URL=postgres://sentinel:demo_pass@postgres:5432/sentinel_db?sslmode=disable
+      - JWT_SECRET=demo-secret-key-2026
+      - PORT=8443
+    depends_on:
+      - postgres
+    networks:
+      - demo-net
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: demo_pass
+      POSTGRES_DB: sentinel_db
+    networks:
+      - demo-net
+    volumes:
+      - ./migrations:/docker-entrypoint-initdb.d
+
+  mock-agent:
+    image: curlimages/curl:latest
+    networks:
+      - demo-net
+    command: >
+      sh -c "while true; do
+        curl -k -s -X POST https://hub:8443/api/v1/metrics \
+          -H 'Content-Type: application/json' \
+          -H 'X-Tenant-ID: 1' \
+          -H 'Authorization: Bearer demo-token' \
+          -d '{\"node_id\": \"demo-server-01\", \"cpu_usage_pct\": 42.5, \"ram_usage_pct\": 68.0, \"disk_usage_pct\": 30.0, \"uptime_hours\": 120}';
+        sleep 5;
+      done"
+
+networks:
+  demo-net:
+    driver: bridge

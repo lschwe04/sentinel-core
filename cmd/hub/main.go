@@ -2,9 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"log/slog"
+	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -65,6 +72,16 @@ func main() {
 		port = "8443"
 	}
 
+	// On-the-Fly Zertifikats-Check für den 1-Click Demo-Modus / Out-of-the-Box Start
+	if _, err := os.Stat("certs/server.crt"); os.IsNotExist(err) {
+		slog.Info("Keine Zertifikate gefunden. Generiere Self-Signed Zertifikate on-the-fly...")
+		if genErr := generateSelfSignedCert(); genErr != nil {
+			slog.Error("Konnte keine Self-Signed Zertifikate generieren", "error", genErr)
+		} else {
+			slog.Info("Self-Signed Zertifikate erfolgreich unter ./certs/ erstellt.")
+		}
+	}
+
 	// mTLS Client CA Pool für Enterprise-Sicherheit konfigurieren
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS13,
@@ -120,4 +137,60 @@ func main() {
 	} else {
 		slog.Info("Hub Server erfolgreich beendet.")
 	}
+}
+
+// Hilfsfunktion zur automatischen Generierung von Entwicklung-/Demo-Zertifikaten
+func generateSelfSignedCert() error {
+	if err := os.MkdirAll("certs", 0755); err != nil {
+		return err
+	}
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"SentinelCore Demo Inc."},
+			CommonName:   "SentinelCore Hub",
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		DNSNames:              []string{"localhost", "hub"},
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return err
+	}
+
+	certOut, err := os.Create("certs/server.crt")
+	if err != nil {
+		return err
+	}
+	defer certOut.Close()
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
+		return err
+	}
+
+	keyOut, err := os.Create("certs/server.key")
+	if err != nil {
+		return err
+	}
+	defer keyOut.Close()
+	privBytes, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return err
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes}); err != nil {
+		return err
+	}
+
+	return nil
 }
