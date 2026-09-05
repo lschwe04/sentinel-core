@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"log/slog"
 	"net/http"
 	"os"
@@ -21,7 +22,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	slog.Info("Starte SentinelCore Management Hub...")
+	slog.Info("Starte SentinelCore Management Hub (Enterprise Edition)...")
 
 	// 1. Datenbank-Pool verbinden & Indizierte Migrationen ausführen
 	if err := db.InitDB(); err != nil {
@@ -64,17 +65,30 @@ func main() {
 		port = "8443"
 	}
 
+	// mTLS Client CA Pool für Enterprise-Sicherheit konfigurieren
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+	}
+
+	if caCertPEM := os.Getenv("CA_CERT_PEM"); caCertPEM != "" {
+		caCertPool := x509.NewCertPool()
+		if ok := caCertPool.AppendCertsFromPEM([]byte(caCertPEM)); ok {
+			tlsConfig.ClientCAs = caCertPool
+			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+			slog.Info("mTLS Client-Zertifikatsverifizierung erfolgreich aktiviert.")
+		} else {
+			slog.Warn("Konnte CA-Zertifikat für mTLS nicht parsen, falle auf Standard-TLS zurück.")
+		}
+	}
+
 	server := &http.Server{
-		Addr: ":" + port,
-		// Globale Sicherheits-Middleware aktivieren
+		Addr:              ":" + port,
 		Handler:           middleware.SecurityHeadersMiddleware(mux),
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
-		TLSConfig: &tls.Config{
-			MinVersion: tls.VersionTLS13,
-		},
+		TLSConfig:         tlsConfig,
 	}
 
 	// Graceful Shutdown vorbereiten
@@ -83,7 +97,6 @@ func main() {
 
 	go func() {
 		slog.Info("Hub Server lauscht", "port", port)
-		// Falls Zertifikate vorhanden sind, mTLS nutzen, sonst HTTP/TLS Fallback
 		if _, err := os.Stat("certs/server.crt"); err == nil {
 			if err := server.ListenAndServeTLS("certs/server.crt", "certs/server.key"); err != nil && err != http.ErrServerClosed {
 				slog.Error("HTTPS Server abgestürzt", "error", err)

@@ -79,38 +79,37 @@ func RenderTenantOverview(w http.ResponseWriter, r *http.Request) {
 			<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 	`)
 
-	if len(customers) == 0 {
-		fmt.Fprintf(w, `<div class="col-span-full p-8 text-center text-gray-400 bg-gray-800 rounded-lg border border-gray-700">Keine Endkunden für diesen Mandanten gefunden.</div>`)
-	} else {
-		for _, c := range customers {
-			badgeClass := "bg-green-900 text-green-300 border-green-700"
-			switch c.Status {
-			case "Warnung":
-				badgeClass = "bg-yellow-900 text-yellow-300 border-yellow-700"
-			case "Kritisch":
-				badgeClass = "bg-red-900 text-red-300 border-red-700"
-			}
+	for _, c := range customers {
+		badgeBg := "bg-green-900 text-green-300 border-green-700"
+		switch c.Status {
+		case "Warnung":
+			badgeBg = "bg-yellow-900 text-yellow-300 border-yellow-700"
+		case "Kritisch":
+			badgeBg = "bg-red-900 text-red-300 border-red-700"
+		}
 
-			fmt.Fprintf(w, `
-				<div class="bg-gray-800 border border-gray-700 rounded-lg p-6 space-y-4 hover:border-blue-500 transition shadow-md">
-					<div class="flex justify-between items-start">
-						<h3 class="text-lg font-bold text-white">%s</h3>
-						<span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border %s">%s</span>
+		fmt.Fprintf(w, `
+				<div class="bg-gray-800 border border-gray-700 rounded-lg p-6 shadow hover:border-blue-500 transition">
+					<div class="flex justify-between items-start mb-4">
+						<h3 class="text-lg font-semibold text-white">%s</h3>
+						<span class="px-2.5 py-0.5 rounded-full text-xs font-medium border %s">%s</span>
 					</div>
-					<div class="text-sm text-gray-300 space-y-1">
-						<p>Verwaltete Nodes: <span class="font-mono text-blue-400 font-bold">%d</span></p>
-						<p>Hardening Score: <span class="font-mono text-white font-bold">%.1f%%</span></p>
+					<div class="space-y-2 text-sm text-gray-300">
+						<p>Verwaltete Nodes: <span class="font-mono font-bold text-white">%d</span></p>
+						<p>CIS Compliance: <span class="font-mono font-bold text-white">%.1f%%</span></p>
 					</div>
-					<div class="pt-4 border-t border-gray-700 flex justify-between items-center text-xs">
-						<a href="/api/v1/ui/tenant/overview?customer_id=%d" class="text-blue-400 hover:underline">Details anzeigen &rarr;</a>
-						<span class="text-gray-500 font-mono">ID: %d</span>
+					<div class="mt-6 pt-4 border-t border-gray-700 flex justify-between items-center">
+						<a href="/dashboard.html?customer_id=%d" class="text-blue-400 hover:text-blue-300 text-sm font-medium">Details anzeigen →</a>
+						<button hx-post="/api/v1/provisioning/trigger" hx-vals='{"customer_id": "%d", "provider": "local", "hardening_level": "level2"}' hx-swap="none"
+							class="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-medium transition">
+							Hardening Starten
+						</button>
 					</div>
 				</div>
-			`, html.EscapeString(c.Name), badgeClass, c.Status, c.TotalNodes, c.CompliancePct, c.ID, c.ID)
-		}
+		`, html.EscapeString(c.Name), badgeBg, c.Status, c.TotalNodes, c.CompliancePct, c.ID, c.ID)
 	}
 
-	fmt.Fprintf(w, `
+	fmt.Fprint(w, `
 			</div>
 		</div>
 	`)
