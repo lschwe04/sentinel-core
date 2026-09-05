@@ -12,60 +12,58 @@ import (
 )
 
 type ProvisionRequest struct {
-	Provider       string `json:"provider"` // "local" oder "hetzner"
+	Provider       string `json:"provider"`
 	NodeName       string `json:"node_name"`
 	NodeIP         string `json:"node_ip,omitempty"`
-	HardeningLevel string `json:"hardening_level"` // "level1" oder "level2"
+	HardeningLevel string `json:"hardening_level"`
 }
 
 var safeNameRegex = regexp.MustCompile(`^[a-zA-Z0-9\-_]+$`)
 
 func TriggerProvisioning(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 
 	var req ProvisionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
+		http.Error(w, `{"error": "Invalid payload"}`, http.StatusBadRequest)
 		return
 	}
 
+	// Security: Strikte Input-Validierung
 	if !safeNameRegex.MatchString(req.NodeName) {
 		http.Error(w, `{"error": "Invalid node_name format"}`, http.StatusBadRequest)
 		return
 	}
 
-	if req.HardeningLevel == "" {
+	// Security: Whitelisting gegen Command Injection in Sub-Prozessen
+	if req.HardeningLevel != "level1" && req.HardeningLevel != "level2" {
 		req.HardeningLevel = "level1"
 	}
 
 	if req.Provider == "local" {
-		if req.NodeIP == "" {
-			http.Error(w, `{"error": "node_ip is required for local provisioning"}`, http.StatusBadRequest)
-			return
-		}
-		// Validierung der IP-Adresse gegen Injection und Fehlkonfiguration
 		if net.ParseIP(req.NodeIP) == nil {
 			http.Error(w, `{"error": "Invalid node_ip format"}`, http.StatusBadRequest)
 			return
 		}
 
-		go func() {
+		// Scalability: Parameter in die Goroutine übergeben, um Race Conditions im Heap zu vermeiden
+		go func(ip, level, name string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 			defer cancel()
 
 			cmd := exec.CommandContext(ctx, "/usr/bin/ansible-playbook", "/etc/sentinel/playbooks/onprem-bootstrap.yml",
-				"-e", "target_host="+req.NodeIP,
-				"-e", "hardening_level="+req.HardeningLevel)
+				"-e", "target_host="+ip,
+				"-e", "hardening_level="+level)
 
 			if output, err := cmd.CombinedOutput(); err != nil {
-				slog.Error("On-Premises Provisioning fehlgeschlagen", "node", req.NodeName, "error", err, "output", string(output))
+				slog.Error("On-Premises Provisioning failed", "node", name, "error", err, "output", string(output))
 				return
 			}
-			slog.Info("Lokaler Node erfolgreich eingerichtet und gehärtet", "node", req.NodeName)
-		}()
+			slog.Info("Lokaler Node erfolgreich eingerichtet", "node", name)
+		}(req.NodeIP, req.HardeningLevel, req.NodeName)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
@@ -73,21 +71,21 @@ func TriggerProvisioning(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-	defer cancel()
+	go func(name, level string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
 
-	cmd := exec.CommandContext(ctx, "/usr/bin/terraform", "apply", "-auto-approve",
-		"-var", "node_name="+req.NodeName,
-		"-var", "hardening_level="+req.HardeningLevel)
-	cmd.Dir = "/opt/sentinel/deployments/terraform"
+		cmd := exec.CommandContext(ctx, "/usr/bin/terraform", "apply", "-auto-approve",
+			"-var", "node_name="+name,
+			"-var", "hardening_level="+level)
+		cmd.Dir = "/opt/sentinel/deployments/terraform"
 
-	go func() {
 		if output, err := cmd.CombinedOutput(); err != nil {
-			slog.Error("Cloud Provisioning fehlgeschlagen", "node", req.NodeName, "error", err, "output", string(output))
+			slog.Error("Cloud Provisioning failed", "node", name, "error", err, "output", string(output))
 			return
 		}
-		slog.Info("Cloud Provisioning erfolgreich abgeschlossen", "node", req.NodeName)
-	}()
+		slog.Info("Cloud Provisioning erfolgreich abgeschlossen", "node", name)
+	}(req.NodeName, req.HardeningLevel)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)

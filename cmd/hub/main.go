@@ -13,6 +13,7 @@ import (
 	"sentinel-core/internal/auth"
 	"sentinel-core/internal/db"
 	"sentinel-core/internal/handlers"
+	"sentinel-core/internal/middleware"
 	"sentinel-core/internal/services"
 )
 
@@ -64,8 +65,9 @@ func main() {
 	}
 
 	server := &http.Server{
-		Addr:              ":" + port,
-		Handler:           mux,
+		Addr: ":" + port,
+		// Globale Sicherheits-Middleware aktivieren
+		Handler:           middleware.SecurityHeadersMiddleware(mux),
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      15 * time.Second,
