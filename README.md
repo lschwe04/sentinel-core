@@ -1,26 +1,27 @@
-# 🛡️ SentinelCore Hub
+# SentinelCore Management Hub 🛡️
 
-SentinelCore Hub is the central, multi-tenant management and control plane designed for IT service providers and managed service providers (MSPs). It aggregates telemetry, security hardening compliance, and system metrics securely via mTLS and WireGuard.
+SentinelCore ist eine Enterprise-Plattform für zentrales Sicherheits-, Compliance- und Infrastruktur-Management (CIS-Hardening, mTLS, FIM und Audit-Logging) für Systemhäuser und IT-Dienstleister.
 
 ## 🚀 Key Features
+- **Zero-Trust Agenten-Enrollment:** Automatische Registrierung über kryptografische Hardware-Fingerprints & Einmal-Tokens.
+- **CIS Hardening & Remediation:** Automatisierte Durchsetzung von CIS-Level-1/2-Profilen via Ansible & Terraform.
+- **Manipulationssichere Audit-Logs:** Kryptografisch verkettete SHA-256 Logs für DSGVO- und Compliance-Nachweise.
+- **Enterprise Security:** Erzwingung von mTLS (TLS 1.3), JWT-Authentifizierung & Microsoft Entra ID SSO.
 
-* **Multi-Tenancy (B2B White-Label):** Manage multiple end-customers cleanly isolated within a single hub instance.
-* **Zero-Trust Communication:** Strict mTLS (TLS 1.3) enforcement and token-based agent enrollment.
-* **Compliance & Hardening:** Continuous tracking of CIS benchmarks and security logs.
-* **Lightweight & Fast:** Built with Go, PostgreSQL (`pgxpool`), HTMX, and Tailwind CSS.
+---
 
-## 📦 Quick Start (Docker)
+## ⚡ Quick Start (Lokal via Docker Compose)
 
-1. Clone the repository:
+1. **Repository klonen & Umgebung konfigurieren:**
    ```bash
-   git clone [https://github.com/your-username/sentinel-core.git](https://github.com/your-username/sentinel-core.git)
+   git clone [https://github.com/lschwe04/sentinel-core.git](https://github.com/lschwe04/sentinel-core.git)
    cd sentinel-core
+   cp configs/config.yaml.example configs/config.yaml # Ggf. anpassen
 
-   Run via Docker Compose:
-   docker-compose up -d
+Stack starten (Hub + PostgreSQL + Prometheus):
 
-🔐 Security Architecture
-All agent-to-hub communications require mutual TLS (mTLS). Database access is pooled securely using pgxpool with strict tenant scoping.
+docker-compose up --build -d
 
-📄 License
-Proprietary / Open Core - See LICENSE file for details.
+Gesundheitsstatus prüfen:
+
+curl -k https://localhost:8443/health
