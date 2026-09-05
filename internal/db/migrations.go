@@ -33,6 +33,12 @@ func RunMigrations() error {
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS users (
+		id UUID PRIMARY KEY,
+		email VARCHAR(255) UNIQUE NOT NULL,
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);
+
 	-- RBAC (Rollensystem)
 	CREATE TABLE IF NOT EXISTS roles (
 		id SERIAL PRIMARY KEY,
@@ -55,6 +61,40 @@ func RunMigrations() error {
 		token_hash VARCHAR(255) UNIQUE NOT NULL,
 		expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
 		is_used BOOLEAN DEFAULT FALSE
+	);
+
+	CREATE TABLE IF NOT EXISTS agent_credentials (
+		node_id VARCHAR(64) PRIMARY KEY,
+		tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
+		shared_secret_hash VARCHAR(64) NOT NULL,
+		hostname VARCHAR(255) NOT NULL DEFAULT '',
+		hardware_uuid VARCHAR(255) NOT NULL DEFAULT '',
+		os_version VARCHAR(255) NOT NULL DEFAULT '',
+		certificate_fingerprint VARCHAR(128),
+		last_seen TIMESTAMP WITH TIME ZONE,
+		status VARCHAR(32) NOT NULL DEFAULT 'active',
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);
+	ALTER TABLE agent_credentials ADD COLUMN IF NOT EXISTS hostname VARCHAR(255) NOT NULL DEFAULT '';
+	ALTER TABLE agent_credentials ADD COLUMN IF NOT EXISTS hardware_uuid VARCHAR(255) NOT NULL DEFAULT '';
+	ALTER TABLE agent_credentials ADD COLUMN IF NOT EXISTS os_version VARCHAR(255) NOT NULL DEFAULT '';
+	ALTER TABLE agent_credentials ADD COLUMN IF NOT EXISTS certificate_fingerprint VARCHAR(128);
+	ALTER TABLE agent_credentials ADD COLUMN IF NOT EXISTS last_seen TIMESTAMP WITH TIME ZONE;
+	ALTER TABLE agent_credentials ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'active';
+
+	CREATE TABLE IF NOT EXISTS agent_commands (
+		id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+		node_id VARCHAR(64) NOT NULL REFERENCES agent_credentials(node_id) ON DELETE CASCADE,
+		tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		command_type VARCHAR(64) NOT NULL,
+		payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+		status VARCHAR(16) NOT NULL DEFAULT 'pending',
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+		delivered_at TIMESTAMP WITH TIME ZONE,
+		acknowledged_at TIMESTAMP WITH TIME ZONE,
+		expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+		result JSONB,
+		CHECK (status IN ('pending', 'delivered', 'acknowledged', 'failed', 'expired'))
 	);
 
 	CREATE TABLE IF NOT EXISTS node_metrics (
@@ -87,6 +127,46 @@ func RunMigrations() error {
 		message TEXT
 	);
 
+	CREATE TABLE IF NOT EXISTS backups (
+		node_id VARCHAR(64) PRIMARY KEY,
+		last_snapshot TIMESTAMP WITH TIME ZONE NOT NULL,
+		status VARCHAR(32) NOT NULL,
+		s3_object_lock BOOLEAN NOT NULL DEFAULT FALSE,
+		size_mb DOUBLE PRECISION NOT NULL DEFAULT 0
+	);
+
+	CREATE TABLE IF NOT EXISTS tenant_audit_logs (
+		id BIGSERIAL PRIMARY KEY,
+		tenant_id VARCHAR(64) NOT NULL,
+		technician_email VARCHAR(255) NOT NULL,
+		action VARCHAR(64) NOT NULL,
+		target_node VARCHAR(64),
+		ip_address INET NOT NULL,
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS permissions (
+		id SERIAL PRIMARY KEY,
+		code VARCHAR(64) UNIQUE NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS role_permissions (
+		role_id INT REFERENCES roles(id) ON DELETE CASCADE,
+		permission_id INT REFERENCES permissions(id) ON DELETE CASCADE,
+		PRIMARY KEY (role_id, permission_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS tenant_integrations (
+		id SERIAL PRIMARY KEY,
+		tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
+		integration_type VARCHAR(32) NOT NULL,
+		webhook_url TEXT NOT NULL,
+		api_token TEXT,
+		is_active BOOLEAN DEFAULT TRUE,
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(tenant_id, integration_type)
+	);
+
 	-- Seed: Systemhaus-Standardrollen
 	INSERT INTO roles (name, description) VALUES
 		('syshaus_admin', 'Vollzugriff auf Systemhaus- und Mandanten-Ebene'),
@@ -102,6 +182,9 @@ func RunMigrations() error {
 	CREATE INDEX IF NOT EXISTS idx_node_metrics_customer ON node_metrics (customer_id);
 	CREATE INDEX IF NOT EXISTS idx_security_logs_node ON security_logs (node_id, created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_security_logs_customer ON security_logs (customer_id);
+	CREATE INDEX IF NOT EXISTS idx_audit_tenant_time ON tenant_audit_logs (tenant_id, created_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_tenant_integrations_active ON tenant_integrations (tenant_id) WHERE is_active = TRUE;
+	CREATE INDEX IF NOT EXISTS idx_agent_commands_poll ON agent_commands (node_id, status, expires_at);
 	`
 
 	_, err := Pool.Exec(ctx, query)

@@ -39,6 +39,8 @@ func InitDB() error {
 	}
 
 	if err := Pool.Ping(ctx); err != nil {
+		Pool.Close()
+		Pool = nil
 		return fmt.Errorf("datenbank antwortet nicht: %w", err)
 	}
 

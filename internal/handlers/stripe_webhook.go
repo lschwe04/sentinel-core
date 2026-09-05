@@ -56,6 +56,10 @@ func HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	switch event.Type {
 	case "customer.subscription.created", "customer.subscription.updated":
 		customerID, _ := objectMap["customer"].(string)
+		if customerID == "" {
+			http.Error(w, "Webhook is missing customer", http.StatusBadRequest)
+			return
+		}
 		status, _ := objectMap["status"].(string) // z.B. "active", "past_due", "canceled"
 
 		dbStatus := "inactive"
@@ -64,12 +68,22 @@ func HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 
 		query := `UPDATE tenants SET subscription_status = $1 WHERE stripe_customer_id = $2`
-		_, _ = db.Pool.Exec(ctx, query, dbStatus, customerID)
+		if _, err := db.Pool.Exec(ctx, query, dbStatus, customerID); err != nil {
+			http.Error(w, "Database update failed", http.StatusInternalServerError)
+			return
+		}
 
 	case "customer.subscription.deleted":
 		customerID, _ := objectMap["customer"].(string)
-		query := `UPDATE tenants SET subscription_status = 'inactive' WHERE stripe_customer_id = $2`
-		_, _ = db.Pool.Exec(ctx, query, customerID)
+		if customerID == "" {
+			http.Error(w, "Webhook is missing customer", http.StatusBadRequest)
+			return
+		}
+		query := `UPDATE tenants SET subscription_status = 'inactive' WHERE stripe_customer_id = $1`
+		if _, err := db.Pool.Exec(ctx, query, customerID); err != nil {
+			http.Error(w, "Database update failed", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)

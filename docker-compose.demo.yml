@@ -6,7 +6,7 @@ services:
       - "8443:8443"
     environment:
       - DATABASE_URL=postgres://sentinel:demo_pass@postgres:5432/sentinel_db?sslmode=disable
-      - JWT_SECRET=demo-secret-key-2026
+      - JWT_SECRET=demo-secret-key-2026-change-me-32
       - PORT=8443
     depends_on:
       - postgres

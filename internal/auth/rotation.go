@@ -129,6 +129,16 @@ func (sm *SecurityManager) ValidateJWT(tokenStr string) (*AgentClaims, error) {
 	if len(parts) != 3 {
 		return nil, errors.New("invalid token format")
 	}
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, errors.New("invalid token header")
+	}
+	var header struct {
+		Alg string `json:"alg"`
+	}
+	if err := json.Unmarshal(headerBytes, &header); err != nil || header.Alg != "HS256" {
+		return nil, errors.New("invalid signing algorithm")
+	}
 
 	unsignedToken := parts[0] + "." + parts[1]
 	h := hmac.New(sha256.New, sm.jwtSecret)
@@ -149,7 +159,7 @@ func (sm *SecurityManager) ValidateJWT(tokenStr string) (*AgentClaims, error) {
 		return nil, err
 	}
 
-	if time.Now().Unix() > claims.ExpiresAt {
+	if claims.NodeID == "" || claims.TenantID == "" || claims.Role == "" || claims.ExpiresAt <= time.Now().Unix() {
 		return nil, errors.New("token expired")
 	}
 

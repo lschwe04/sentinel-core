@@ -43,8 +43,11 @@ func checkThresholds() {
 	defer cancel()
 
 	query := `
-		SELECT n.node_id, COALESCE(n.customer_id, 0), n.cpu_usage_pct, n.ram_usage_pct
+		SELECT n.node_id, COALESCE(n.customer_id, 0), COALESCE(t.id, ac.tenant_id, 0), n.cpu_usage_pct, n.ram_usage_pct
 		FROM node_metrics n
+		LEFT JOIN customers c ON c.id = n.customer_id
+		LEFT JOIN tenants t ON t.id = c.tenant_id
+		LEFT JOIN agent_credentials ac ON ac.node_id = n.node_id
 		WHERE n.recorded_at >= NOW() - INTERVAL '2 minutes'
 		  AND (n.cpu_usage_pct > 90.0 OR n.ram_usage_pct > 95.0)
 	`
@@ -57,9 +60,9 @@ func checkThresholds() {
 
 	for rows.Next() {
 		var nodeID string
-		var tenantID int
+		var customerID, tenantID int
 		var cpu, ram float64
-		if err := rows.Scan(&nodeID, &tenantID, &cpu, &ram); err != nil {
+		if err := rows.Scan(&nodeID, &customerID, &tenantID, &cpu, &ram); err != nil {
 			slog.Error("Failed to scan threshold row", "error", err)
 			continue
 		}
@@ -68,7 +71,7 @@ func checkThresholds() {
 
 		dispatchAlertToIntegrations(tenantID, AlertPayload{
 			NodeID:     nodeID,
-			CustomerID: tenantID,
+			CustomerID: customerID,
 			Metric:     "CPU/RAM",
 			Value:      cpu,
 			Severity:   "CRITICAL",
@@ -83,10 +86,10 @@ func checkDeadAgents() {
 	defer cancel()
 
 	query := `
-		SELECT node_id, COALESCE(customer_id, 0), MAX(recorded_at) as last_seen
-		FROM node_metrics
-		GROUP BY node_id, customer_id
-		HAVING MAX(recorded_at) < NOW() - INTERVAL '10 minutes'
+		SELECT node_id, 0, tenant_id, COALESCE(last_seen, created_at) AS last_seen
+		FROM agent_credentials
+		WHERE status = 'active'
+		  AND COALESCE(last_seen, created_at) < NOW() - INTERVAL '10 minutes'
 	`
 	rows, err := db.Pool.Query(ctx, query)
 	if err != nil {
@@ -97,9 +100,9 @@ func checkDeadAgents() {
 
 	for rows.Next() {
 		var nodeID string
-		var tenantID int
+		var customerID, tenantID int
 		var lastSeen time.Time
-		if err := rows.Scan(&nodeID, &tenantID, &lastSeen); err != nil {
+		if err := rows.Scan(&nodeID, &customerID, &tenantID, &lastSeen); err != nil {
 			slog.Error("Failed to scan dead agent row", "error", err)
 			continue
 		}
@@ -108,7 +111,7 @@ func checkDeadAgents() {
 
 		dispatchAlertToIntegrations(tenantID, AlertPayload{
 			NodeID:     nodeID,
-			CustomerID: tenantID,
+			CustomerID: customerID,
 			Metric:     "HEARTBEAT",
 			Value:      0,
 			Severity:   "ERROR",

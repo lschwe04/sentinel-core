@@ -4,11 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 
+	"sentinel-core/internal/auth"
 	"sentinel-core/internal/db"
 )
 
@@ -20,9 +26,18 @@ type EnrollmentRequest struct {
 }
 
 type EnrollmentResponse struct {
-	AgentID      string `json:"agent_id"`
-	SharedSecret string `json:"mTLS_shared_secret"`
-	Status       string `json:"status"`
+	AgentID           string `json:"agent_id"`
+	SharedSecret      string `json:"mTLS_shared_secret"`
+	ClientCertificate string `json:"client_certificate,omitempty"`
+	ClientPrivateKey  string `json:"client_private_key,omitempty"`
+	CACertificate     string `json:"ca_certificate,omitempty"`
+	Status            string `json:"status"`
+}
+
+var agentSecurityManager *auth.SecurityManager
+
+func ConfigureAgentSecurityManager(manager *auth.SecurityManager) {
+	agentSecurityManager = manager
 }
 
 // HandleAgentEnrollment verarbeitet die Erstregistrierung eines neuen Endpunkt-Agenten
@@ -38,6 +53,14 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 	var req EnrollmentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.EnrollmentToken == "" {
 		http.Error(w, `{"error": "Invalid request payload or missing token"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Hostname == "" || req.HardwareUUID == "" {
+		http.Error(w, `{"error": "hostname and hardware_uuid are required"}`, http.StatusBadRequest)
+		return
+	}
+	if len(req.Hostname) > 255 || len(req.HardwareUUID) > 255 || len(req.OSVersion) > 255 {
+		http.Error(w, `{"error": "device metadata is too long"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -76,10 +99,13 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Eindeutigen Agenten-ID via Hardware-Fingerprint generieren
-	hasher := sha256.New()
-	hasher.Write([]byte(req.HardwareUUID + req.Hostname))
-	agentID := hex.EncodeToString(hasher.Sum(nil))[:16]
+	// Die Node-ID ist zufällig und unveränderlich; Hardwaredaten dienen nur der Nachvollziehbarkeit.
+	nodeIDBytes := make([]byte, 16)
+	if _, err := rand.Read(nodeIDBytes); err != nil {
+		http.Error(w, `{"error": "Failed to generate agent identity"}`, http.StatusInternalServerError)
+		return
+	}
+	agentID := hex.EncodeToString(nodeIDBytes)
 
 	// Kryptografisch sichere Zufallszahlen für das mTLS Shared Secret
 	randBytes := make([]byte, 32)
@@ -88,6 +114,32 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sharedSecret := hex.EncodeToString(randBytes)
+	sharedSecretHashBytes := sha256.Sum256([]byte(sharedSecret))
+	sharedSecretHash := hex.EncodeToString(sharedSecretHashBytes[:])
+	var certificateFingerprint string
+	var clientCertificate, clientPrivateKey, caCertificate string
+	if agentSecurityManager != nil {
+		certPEM, keyPEM, issueErr := agentSecurityManager.IssueAgentCertificate(agentID, strconv.Itoa(tenantID), 30)
+		if issueErr != nil {
+			http.Error(w, `{"error": "Failed to issue client certificate"}`, http.StatusInternalServerError)
+			return
+		}
+		block, _ := pem.Decode(certPEM)
+		if block == nil {
+			http.Error(w, `{"error": "Failed to encode client certificate"}`, http.StatusInternalServerError)
+			return
+		}
+		cert, parseErr := x509.ParseCertificate(block.Bytes)
+		if parseErr != nil {
+			http.Error(w, `{"error": "Failed to parse client certificate"}`, http.StatusInternalServerError)
+			return
+		}
+		fingerprint := sha256.Sum256(cert.Raw)
+		certificateFingerprint = hex.EncodeToString(fingerprint[:])
+		clientCertificate = base64.StdEncoding.EncodeToString(certPEM)
+		clientPrivateKey = base64.StdEncoding.EncodeToString(keyPEM)
+		caCertificate = base64.StdEncoding.EncodeToString([]byte(os.Getenv("CA_CERT_PEM")))
+	}
 
 	// Agent in Datenbank persistieren
 	_, err = tx.Exec(ctx, `
@@ -97,6 +149,14 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 	`, agentID)
 	if err != nil {
 		http.Error(w, `{"error": "Database error registering agent hardware record"}`, http.StatusInternalServerError)
+		return
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO agent_credentials (node_id, tenant_id, shared_secret_hash, hostname, hardware_uuid, os_version, certificate_fingerprint)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''))
+	`, agentID, tenantID, sharedSecretHash, req.Hostname, req.HardwareUUID, req.OSVersion, certificateFingerprint)
+	if err != nil {
+		http.Error(w, `{"error": "Database error storing agent credentials"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -116,8 +176,11 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(EnrollmentResponse{
-		AgentID:      agentID,
-		SharedSecret: sharedSecret,
-		Status:       "ENROLLED",
+		AgentID:           agentID,
+		SharedSecret:      sharedSecret,
+		ClientCertificate: clientCertificate,
+		ClientPrivateKey:  clientPrivateKey,
+		CACertificate:     caCertificate,
+		Status:            "ENROLLED",
 	})
 }

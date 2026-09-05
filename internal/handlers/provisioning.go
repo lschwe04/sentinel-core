@@ -37,6 +37,10 @@ func TriggerProvisioning(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error": "Invalid node_name format"}`, http.StatusBadRequest)
 		return
 	}
+	if req.Provider != "local" && req.Provider != "cloud" {
+		http.Error(w, `{"error": "provider must be local or cloud"}`, http.StatusBadRequest)
+		return
+	}
 
 	// Security: Whitelisting gegen Command Injection in Sub-Prozessen
 	if req.HardeningLevel != "level1" && req.HardeningLevel != "level2" {
@@ -89,5 +93,5 @@ func TriggerProvisioning(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	w.Write([]byte(`{"status": "cloud_provisioning_started", "node": "` + req.NodeName + `"}`))
+	json.NewEncoder(w).Encode(map[string]string{"status": "cloud_provisioning_started", "node": req.NodeName})
 }

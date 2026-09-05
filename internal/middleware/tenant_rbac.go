@@ -22,11 +22,17 @@ const (
 	ContextKeyCustomerID contextKey = "customer_id"
 )
 
+func TenantIDFromContext(ctx context.Context) (string, bool) {
+	tenantID, ok := ctx.Value(ContextKeyTenantID).(string)
+	return tenantID, ok && tenantID != ""
+}
+
 // Hierarchie-Map für den Abgleich von Mindestberechtigungen
 var roleHierarchy = map[string]int{
 	"customer_view": 1,
 	"syshaus_tech":  2,
 	"syshaus_admin": 3,
+	"technician":    2,
 }
 
 // Typed Claims für sicheres und performantes JWT-Parsing
@@ -53,7 +59,7 @@ func EnforceTenantAndRBAC(requiredRole string, jwtSecret string) func(http.Handl
 			// 1. JWT parsen & Signatur prüfen
 			claims := &JWTClaims{}
 			token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
-				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				if token.Method != jwt.SigningMethodHS256 {
 					return nil, jwt.ErrSignatureInvalid
 				}
 				return secretBytes, nil

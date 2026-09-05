@@ -28,10 +28,15 @@ Write-Host "[*] Lade Sentinel-Agenten-Binary herunter..."
 $DownloadUrl = "$HubUrl/downloads/windows/sentinel-agent.exe"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls13
 # Fallvoraussetzung: Zertifikatsprüfung für internes Deployment anpassen falls Self-Signed
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
 
 try {
     Invoke-WebRequest -Uri $DownloadUrl -OutFile $BinaryPath
+    $ArtifactHeaders = (Invoke-WebRequest -Uri $DownloadUrl -Method Head).Headers
+    $ExpectedHash = $ArtifactHeaders["X-Checksum-SHA256"]
+    $ActualHash = (Get-FileHash -Path $BinaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($ExpectedHash) -or $ExpectedHash.ToLowerInvariant() -ne $ActualHash) {
+        throw "Agent-Binary-Integrität konnte nicht verifiziert werden"
+    }
 } catch {
     Write-Error "Fehler beim Herunterladen des Agenten: $_"
     exit 1
@@ -52,14 +57,23 @@ $Body = @{
 Write-Host "[*] Registriere Agent am Sentinel Hub ($HubUrl)..."
 try {
     $Response = Invoke-RestMethod -Uri "$HubUrl/enroll" -Method Post -Body $Body -ContentType "application/json"
+    if ($Response.status -ne "ENROLLED") { throw "Ungültige Enrollment-Antwort" }
     
     # Credentials lokal sicher speichern
     $ConfigContent = @"
 node_id: "$($Response.agent_id)"
 shared_secret: "$($Response.mTLS_shared_secret)"
 hub_url: "$HubUrl"
+client_certificate: "$InstallDir\client.crt"
+client_key: "$InstallDir\client.key"
+ca_certificate: "$InstallDir\ca.crt"
 "@
     Set-Content -Path $ConfigPath -Value $ConfigContent -Encoding utf8
+    if ($Response.client_certificate -and $Response.client_private_key -and $Response.ca_certificate) {
+        [IO.File]::WriteAllBytes("$InstallDir\client.crt", [Convert]::FromBase64String($Response.client_certificate))
+        [IO.File]::WriteAllBytes("$InstallDir\client.key", [Convert]::FromBase64String($Response.client_private_key))
+        [IO.File]::WriteAllBytes("$InstallDir\ca.crt", [Convert]::FromBase64String($Response.ca_certificate))
+    }
 } catch {
     Write-Error "Enrollment fehlgeschlagen: $_"
     exit 1

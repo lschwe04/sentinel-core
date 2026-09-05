@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"sentinel-core/internal/middleware"
 )
 
 type LiveMetricEvent struct {
@@ -54,13 +56,21 @@ func (b *SSEBroker) listen() {
 
 // HandleSSEStream stellt den HTTP Event-Stream für das HTMX Dashboard bereit
 func HandleSSEStream(w http.ResponseWriter, r *http.Request) {
+	if GlobalSSEBroker == nil {
+		http.Error(w, "SSE broker unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported", http.StatusBadRequest)
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant_id")
+	tenantID, ok := middleware.TenantIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

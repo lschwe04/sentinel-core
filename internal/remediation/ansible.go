@@ -42,7 +42,11 @@ func (e *Engine) TriggerHardening(ctx context.Context, tenantID, nodeID, ruleID 
 		return fmt.Errorf("invalid playbook directory: %w", err)
 	}
 	absPlaybookPath, err := filepath.Abs(playbookPath)
-	if err != nil || len(absPlaybookPath) < len(absPlaybookDir) || absPlaybookPath[:len(absPlaybookDir)] != absPlaybookDir {
+	if err != nil {
+		return fmt.Errorf("invalid playbook path: %w", err)
+	}
+	relativePath, err := filepath.Rel(absPlaybookDir, absPlaybookPath)
+	if err != nil || relativePath == ".." || len(relativePath) >= 3 && relativePath[:3] == ".."+string(filepath.Separator) {
 		return fmt.Errorf("unauthorized path traversal attempt via rule_id")
 	}
 

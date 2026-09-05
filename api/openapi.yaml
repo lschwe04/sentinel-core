@@ -6,6 +6,54 @@ info:
 servers:
   - url: https://localhost:8443/api/v1
 paths:
+  /agent/v1/heartbeat:
+    post:
+      summary: Authentifizierten Agenten-Heartbeat empfangen
+      security: [{ agentBearer: [] }]
+      responses:
+        '200': { description: Heartbeat akzeptiert }
+  /agent/v1/telemetry:
+    post:
+      summary: Agent-Telemetrie empfangen
+      security: [{ agentBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AgentTelemetry' }
+      responses:
+        '201': { description: Telemetrie gespeichert }
+  /agent/v1/hardening/report:
+    post:
+      summary: Agent-Hardening-Report empfangen
+      security: [{ agentBearer: [] }]
+      responses:
+        '200': { description: Report akzeptiert }
+  /agent/v1/commands:
+    get:
+      summary: Nächsten tenant-gebundenen Befehl abholen
+      security: [{ agentBearer: [] }]
+      responses:
+        '200': { description: Befehl geliefert }
+        '204': { description: Keine ausstehenden Befehle }
+  /agent/v1/commands/{id}/ack:
+    post:
+      summary: Befehl quittieren
+      security: [{ agentBearer: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Quittierung gespeichert }
+  /downloads/linux/sentinel-agent:
+    get:
+      summary: Signierte Linux-Agent-Binary ausliefern
+      responses:
+        '200': { description: Binary }
+  /downloads/windows/sentinel-agent.exe:
+    get:
+      summary: Signierte Windows-Agent-Binary ausliefern
+      responses:
+        '200': { description: Binary }
   /metrics:
     post:
       summary: Telemetriedaten des Agenten empfangen
@@ -60,6 +108,11 @@ paths:
           description: Provisioning-Job erfolgreich im Hintergrund gestartet
 
 components:
+  securitySchemes:
+    agentBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: shared-secret
   schemas:
     NodeMetrics:
       type: object
@@ -74,3 +127,11 @@ components:
           type: number
         uptime_hours:
           type: integer
+    AgentTelemetry:
+      type: object
+      required: [cpu_usage_pct, ram_usage_pct, disk_usage_pct, uptime_hours]
+      properties:
+        cpu_usage_pct: { type: number, minimum: 0, maximum: 100 }
+        ram_usage_pct: { type: number, minimum: 0, maximum: 100 }
+        disk_usage_pct: { type: number, minimum: 0, maximum: 100 }
+        uptime_hours: { type: integer, minimum: 0 }
