@@ -4,6 +4,17 @@ server:
   read_timeout: "5s"
   write_timeout: "10s"
 
+# Separater mTLS-Listener für Agenten-Telemetrie auf Port 9443
+telemetry_server:
+  host: "10.0.0.1"
+  port: 9443
+  path: "/agent/v1/telemetry"
+  read_timeout: "5s"
+  write_timeout: "10s"
+  tls:
+    enabled: true
+    client_auth_required: true
+
 database:
   host: "postgres"
   port: 5432
@@ -14,3 +25,8 @@ database:
 security:
   jwt_issuer: "sentinel-core-hub"
   token_expiration_hours: 8
+
+# Aktiviertes Debug-Logging zur genauen Analyse von mTLS-Handshakes und Payloads
+logging:
+  level: "debug"
+  format: "json"

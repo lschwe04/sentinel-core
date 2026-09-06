@@ -57,10 +57,15 @@ if [ -n "$CLIENT_CERT_B64" ] && [ -n "$CLIENT_KEY_B64" ] && [ -n "$CA_CERT_B64" 
     printf '%s' "$CA_CERT_B64" | base64 -d > "$CERT_DIR/ca.crt"
     chmod 600 "$CERT_DIR/client.key"
 fi
+
+# Hub-Hostname für mTLS-Telemetrie-URL extrahieren
+HUB_HOST=$(echo "$HUB_URL" | awk -F/ '{print $3}' | cut -d: -f1)
+
 cat <<EOF > "$INSTALL_DIR/config.yaml"
 node_id: "$(echo $RESPONSE | grep -o '"agent_id":"[^"]*' | cut -d'"' -f4)"
 shared_secret: "$(echo $RESPONSE | grep -o '"mTLS_shared_secret":"[^"]*' | cut -d'"' -f4)"
 hub_url: "$HUB_URL"
+hub_telemetry_url: "https://$HUB_HOST:9443/agent/v1/telemetry"
 client_certificate: "$CERT_DIR/client.crt"
 client_key: "$CERT_DIR/client.key"
 ca_certificate: "$CERT_DIR/ca.crt"
