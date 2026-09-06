@@ -73,6 +73,10 @@ func main() {
 			slog.Error("JWT_PRIVATE_KEY_PEM und JWT_PUBLIC_KEY_PEM müssen für Enterprise-Betrieb konfiguriert sein")
 			os.Exit(1)
 		}
+		if err := auth.InitializeEphemeralJWTKeys(); err != nil {
+			slog.Error("Ephemere JWT-Schlüssel konnten nicht generiert werden", "error", err)
+			os.Exit(1)
+		}
 	}
 	if len(jwtSecret) < 32 {
 		slog.Error("JWT_SECRET muss mindestens 32 Zeichen lang sein")
