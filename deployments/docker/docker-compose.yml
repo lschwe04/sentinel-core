@@ -4,6 +4,7 @@ services:
     build: .
     ports:
       - "8443:8443"
+      - "9443:9443"
     networks:
       - sentinel-net
     volumes:
