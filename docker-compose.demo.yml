@@ -10,6 +10,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - JWT_SECRET=demo-secret-key-2026-change-me-32
       - ALLOW_EPHEMERAL_JWT_KEYS=true
+      - ALLOW_EPHEMERAL_CERTS=true
       - PORT=8443
     depends_on:
       postgres:

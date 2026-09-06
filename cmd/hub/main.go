@@ -159,6 +159,12 @@ func main() {
 	privateTLS := publicTLS.Clone()
 	privateTLS.ClientAuth = tls.RequireAndVerifyClientCert
 	var securityManager *auth.SecurityManager
+	if os.Getenv("ALLOW_EPHEMERAL_CERTS") == "true" && (os.Getenv("CA_CERT_PEM") == "" || os.Getenv("CA_KEY_PEM") == "") {
+		if err := auth.InitializeEphemeralMTLSCA(); err != nil {
+			slog.Error("Ephemere mTLS-CA konnte nicht generiert werden", "error", err)
+			os.Exit(1)
+		}
+	}
 
 	caCertPEM, caSecretErr := secretProvider.Get(startupCtx, "CA_CERT_PEM")
 	if caSecretErr == nil && caCertPEM != "" {
