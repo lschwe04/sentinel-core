@@ -1,6 +1,8 @@
 services:
   hub:
-    build: .
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile
     ports:
       - "8443:8443"
     environment:
