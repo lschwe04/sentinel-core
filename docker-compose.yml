@@ -1,27 +1,56 @@
-version: '3.8'
-
 services:
-  sentinel-hub:
-    build: 
-      context: .
-      dockerfile: Dockerfile.hub
-    ports:
-      - "8443:8443"
-    environment:
-      - HUB_ADDR=0.0.0.0:8443
-      - ENTERPRISE_AUTH_TOKEN=mein-geheimes-token
-    volumes:
-      - ./certs:/app/certs
-
-  sentinel-agent:
+  sentinel-core:
     build:
       context: .
-      dockerfile: Dockerfile.agent
+      dockerfile: deployments/docker/Dockerfile
     ports:
+      - "8443:8443"
       - "9443:9443"
     environment:
-      - AGENT_LISTEN_ADDR=0.0.0.0:9443
-      - NODE_ID=node-local-docker
-      - HUB_METRICS_URL=https://sentinel-hub:8443/api/v1/metrics
+      DATABASE_URL: postgres://sentinel:${POSTGRES_PASSWORD:-change-me}@postgres:5432/sentinel?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      ENTERPRISE_AUTH_TOKEN: ${ENTERPRISE_AUTH_TOKEN:?set ENTERPRISE_AUTH_TOKEN}
+      JWT_PRIVATE_KEY_PEM: ${JWT_PRIVATE_KEY_PEM:?set JWT_PRIVATE_KEY_PEM}
+      JWT_PUBLIC_KEY_PEM: ${JWT_PUBLIC_KEY_PEM:?set JWT_PUBLIC_KEY_PEM}
+      CA_CERT_PEM: ${CA_CERT_PEM:?set CA_CERT_PEM}
+      CA_KEY_PEM: ${CA_KEY_PEM:?set CA_KEY_PEM}
+      PUBLIC_PORT: "8443"
+      PRIVATE_PORT: "9443"
+    volumes:
+      - ./certs:/certs:ro
     depends_on:
-      - sentinel-hub
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: sentinel
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:
+  redis-data:

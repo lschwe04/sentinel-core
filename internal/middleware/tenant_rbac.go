@@ -71,7 +71,7 @@ func EnforceTenantAndRBAC(requiredRole string, jwtSecret string) func(http.Handl
 
 			// 2. Anti-Spoofing: Verhindert das Einschleusen fremder Tenant-Header
 			headerTenantID := r.Header.Get("X-Tenant-ID")
-			if headerTenantID != "" && headerTenantID != tenantClaim {
+			if headerTenantID == "" || headerTenantID != tenantClaim {
 				respondJSONError(w, http.StatusForbidden, "Forbidden: Tenant cross-contamination attempt detected")
 				return
 			}
@@ -87,7 +87,7 @@ func EnforceTenantAndRBAC(requiredRole string, jwtSecret string) func(http.Handl
 				SELECT r.name, ur.customer_id 
 				FROM user_roles ur
 				JOIN roles r ON ur.role_id = r.id
-				WHERE ur.user_id = $1 AND ur.tenant_id = $2
+				WHERE ur.user_id = $1 AND ur.tenant_id = $2::int
 			`
 			err = db.Pool.QueryRow(dbCtx, query, userID, tenantClaim).Scan(&liveRole, &dbCustomerID)
 			if err != nil {
@@ -121,6 +121,7 @@ func EnforceTenantAndRBAC(requiredRole string, jwtSecret string) func(http.Handl
 			// 6. Sicheren Kontext für nachfolgende Handler aufbauen
 			ctx := context.WithValue(r.Context(), ContextKeyUserID, userID)
 			ctx = context.WithValue(ctx, ContextKeyTenantID, tenantClaim)
+			ctx = context.WithValue(ctx, auth.AuthenticatedTenantKey, tenantClaim)
 			ctx = context.WithValue(ctx, ContextKeyRole, liveRole)
 
 			// Kontext-Typisierung für CustomerID durchgehend als int beibehalten

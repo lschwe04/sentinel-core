@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sentinel-core.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "sentinel-core.fullname" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "sentinel-core.fullname" . }}
+    spec:
+      containers:
+        - name: sentinel-core
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: public
+              containerPort: {{ .Values.service.publicPort }}
+            - name: private
+              containerPort: {{ .Values.service.privatePort }}
+          envFrom:
+            - secretRef:
+                name: {{ include "sentinel-core.fullname" . }}
+          env:
+            - name: ALLOW_EPHEMERAL_JWT_KEYS
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: public
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: public
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+{{ toYaml .Values.resources | indent 12 }}

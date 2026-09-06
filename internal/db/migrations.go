@@ -17,6 +17,7 @@ func RunMigrations() error {
 	-- Basis-Mandantenstruktur
 	CREATE TABLE IF NOT EXISTS tenants (
 		id SERIAL PRIMARY KEY,
+		parent_tenant_id INT REFERENCES tenants(id) ON DELETE RESTRICT,
 		name VARCHAR(255) NOT NULL,
 		slug VARCHAR(64) UNIQUE NOT NULL,
 		logo_url TEXT,
@@ -99,6 +100,7 @@ func RunMigrations() error {
 
 	CREATE TABLE IF NOT EXISTS node_metrics (
 		id BIGSERIAL PRIMARY KEY,
+		tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
 		node_id VARCHAR(64) NOT NULL,
 		customer_id INT REFERENCES customers(id) ON DELETE CASCADE,
 		cpu_usage_pct FLOAT NOT NULL,
@@ -107,6 +109,46 @@ func RunMigrations() error {
 		uptime_hours INT DEFAULT 0,
 		recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE TABLE IF NOT EXISTS event_outbox (
+		id BIGSERIAL PRIMARY KEY,
+		tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		event_type VARCHAR(64) NOT NULL,
+		deduplication_key VARCHAR(255) NOT NULL,
+		payload JSONB NOT NULL,
+		status VARCHAR(16) NOT NULL DEFAULT 'pending',
+		available_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+		attempts INT NOT NULL DEFAULT 0,
+		last_error TEXT,
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(event_type, deduplication_key)
+	);
+
+	CREATE TABLE IF NOT EXISTS audit_logs (
+		id BIGSERIAL PRIMARY KEY,
+		tenant_id VARCHAR(64) NOT NULL,
+		action VARCHAR(128) NOT NULL,
+		actor VARCHAR(255) NOT NULL,
+		node_id VARCHAR(128) NOT NULL DEFAULT '',
+		payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+		prev_hash CHAR(64) NOT NULL,
+		current_hash CHAR(64) NOT NULL,
+		created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_logs_tenant_hash ON audit_logs(tenant_id, current_hash);
+	CREATE OR REPLACE FUNCTION prevent_audit_mutation() RETURNS trigger AS $$
+	BEGIN
+		RAISE EXCEPTION 'audit logs are append-only';
+	END;
+	$$ LANGUAGE plpgsql;
+	DROP TRIGGER IF EXISTS audit_logs_immutable ON audit_logs;
+	CREATE TRIGGER audit_logs_immutable BEFORE UPDATE OR DELETE ON audit_logs
+		FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+	ALTER TABLE node_metrics ENABLE ROW LEVEL SECURITY;
+	DROP POLICY IF EXISTS node_metrics_tenant_isolation ON node_metrics;
+	CREATE POLICY node_metrics_tenant_isolation ON node_metrics
+		USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::INTEGER)
+		WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::INTEGER);
 
 	CREATE TABLE IF NOT EXISTS hardening_status (
 		node_id VARCHAR(64) PRIMARY KEY,

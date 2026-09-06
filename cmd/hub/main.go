@@ -24,6 +24,7 @@ import (
 	"sentinel-core/internal/db"
 	"sentinel-core/internal/handlers"
 	"sentinel-core/internal/middleware"
+	"sentinel-core/internal/observability"
 	"sentinel-core/internal/services"
 
 	"github.com/redis/go-redis/v9"
@@ -59,6 +60,7 @@ func main() {
 
 	// Öffentliche Endpunkte
 	privateMux.HandleFunc("/health", handlers.HandleHealthCheck)
+	privateMux.HandleFunc("/healthz", handlers.HandleLiveness)
 	privateMux.HandleFunc("/security", handlers.RenderSecurityTrustPage)
 	privateMux.HandleFunc("/webhook/stripe", handlers.HandleStripeWebhook)
 	jwtSecret, secretErr := secretProvider.Get(startupCtx, "JWT_SECRET")
@@ -80,6 +82,7 @@ func main() {
 	// Geschützte API-Endpunkte mit Authentifizierung & Tenant-Isolation
 	protectedMetrics := auth.TenantAuthMiddleware(http.HandlerFunc(handlers.IngestMetrics))
 	privateMux.Handle("/api/v1/metrics", protectedMetrics)
+	privateMux.HandleFunc("/metrics", observability.Handler)
 
 	privateMux.Handle("/api/v1/metrics/query", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(http.HandlerFunc(handlers.GetMetrics)))
 	privateMux.Handle("/api/v1/hardening/report", auth.TenantAuthMiddleware(http.HandlerFunc(handlers.HandleHardeningReport)))
@@ -93,17 +96,20 @@ func main() {
 
 	// Versionierte Agenten-Schnittstelle: Bootstrap erfolgt über Enrollment, danach über Secret und optional gebundenes mTLS-Zertifikat.
 	var agentLimiter *auth.RedisRateLimiter
+	var redisClient *redis.Client
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
 		options, redisErr := redis.ParseURL(redisURL)
 		if redisErr != nil {
 			slog.Error("REDIS_URL ist ungültig", "error", redisErr)
 			os.Exit(1)
 		}
-		agentLimiter = auth.NewRedisRateLimiter(redis.NewClient(options), 300, time.Minute)
+		redisClient = redis.NewClient(options)
+		agentLimiter = auth.NewRedisRateLimiter(redisClient, 300, time.Minute)
 	} else {
 		slog.Error("REDIS_URL fehlt; verteilter Agent-Rate-Limiter ist nicht konfiguriert")
 		os.Exit(1)
 	}
+	privateMux.HandleFunc("/readyz", handlers.HandleReadiness(redisClient))
 	agentAPI := func(handler http.Handler) http.Handler {
 		secured := handlers.RequireAgent(handler)
 		return auth.RedisRateLimitMiddleware(agentLimiter, true, secured)

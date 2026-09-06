@@ -17,6 +17,8 @@ import (
 
 	"sentinel-core/internal/auth"
 	"sentinel-core/internal/db"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type agentContext struct {
@@ -170,15 +172,21 @@ func HandleAgentTelemetry(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	_, err := db.Pool.Exec(ctx, `
-		INSERT INTO node_metrics (node_id, customer_id, cpu_usage_pct, ram_usage_pct, disk_usage_pct, uptime_hours, recorded_at)
-		VALUES ($1, NULL, $2, $3, $4, $5, CURRENT_TIMESTAMP)
-	`, identity.nodeID, telemetry.CPUUsagePct, telemetry.RAMUsagePct, telemetry.DiskUsagePct, telemetry.UptimeHours)
+	err := db.WithTenantTx(ctx, identity.tenantID, func(txCtx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(txCtx, `
+			INSERT INTO node_metrics (tenant_id, node_id, customer_id, cpu_usage_pct, ram_usage_pct, disk_usage_pct, uptime_hours, recorded_at)
+			VALUES ($1, $2, NULL, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+		`, identity.tenantID, identity.nodeID, telemetry.CPUUsagePct, telemetry.RAMUsagePct, telemetry.DiskUsagePct, telemetry.UptimeHours)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(txCtx, `UPDATE agent_credentials SET last_seen = CURRENT_TIMESTAMP WHERE node_id = $1 AND tenant_id = $2`, identity.nodeID, identity.tenantID)
+		return err
+	})
 	if err != nil {
 		http.Error(w, `{"error":"telemetry storage failed"}`, http.StatusInternalServerError)
 		return
 	}
-	_, _ = db.Pool.Exec(ctx, `UPDATE agent_credentials SET last_seen = CURRENT_TIMESTAMP WHERE node_id = $1 AND tenant_id = $2`, identity.nodeID, identity.tenantID)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})

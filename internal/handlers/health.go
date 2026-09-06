@@ -12,7 +12,7 @@ func HandleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Prüfe, ob die Datenbankverbindung steht
-	if err := db.Pool.Ping(ctx); err != nil {
+	if db.Pool == nil || db.Pool.Ping(ctx) != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte("STATUS: UNHEALTHY (Database down)"))
 		return
