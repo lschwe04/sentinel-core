@@ -10,7 +10,8 @@ services:
       - JWT_SECRET=demo-secret-key-2026-change-me-32
       - PORT=8443
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - demo-net
 
@@ -20,6 +21,12 @@ services:
       POSTGRES_USER: sentinel
       POSTGRES_PASSWORD: demo_pass
       POSTGRES_DB: sentinel_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
     networks:
       - demo-net
     volumes:
@@ -29,15 +36,17 @@ services:
     image: curlimages/curl:latest
     networks:
       - demo-net
-    command: >
-      sh -c "while true; do
-        curl -k -s -X POST https://hub:8443/api/v1/metrics \
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        while true; do
+          curl -k -s -X POST https://hub:8443/api/v1/metrics \
           -H 'Content-Type: application/json' \
           -H 'X-Tenant-ID: 1' \
           -H 'Authorization: Bearer demo-token' \
-          -d '{\"node_id\": \"demo-server-01\", \"cpu_usage_pct\": 42.5, \"ram_usage_pct\": 68.0, \"disk_usage_pct\": 30.0, \"uptime_hours\": 120}';
-        sleep 5;
-      done"
+          -d '{"node_id": "demo-server-01", "cpu_usage_pct": 42.5, "ram_usage_pct": 68.0, "disk_usage_pct": 30.0, "uptime_hours": 120}'
+          sleep 5
+        done
 
 networks:
   demo-net:
