@@ -20,10 +20,13 @@ import (
 
 	"sentinel-core/internal/api"
 	"sentinel-core/internal/auth"
+	"sentinel-core/internal/config"
 	"sentinel-core/internal/db"
 	"sentinel-core/internal/handlers"
 	"sentinel-core/internal/middleware"
 	"sentinel-core/internal/services"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -31,6 +34,9 @@ func main() {
 	slog.SetDefault(logger)
 
 	slog.Info("Starte SentinelCore Management Hub (Enterprise Edition)...")
+	secretProvider := config.NewProvider()
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer startupCancel()
 
 	// 1. Datenbank-Pool verbinden & Indizierte Migrationen ausführen
 	if err := db.InitDB(); err != nil {
@@ -49,14 +55,23 @@ func main() {
 	handlers.InitSSEBroker()
 
 	// 3. Router einrichten
-	mux := http.NewServeMux()
+	privateMux := http.NewServeMux()
 
 	// Öffentliche Endpunkte
-	mux.HandleFunc("/health", handlers.HandleHealthCheck)
-	mux.HandleFunc("/enroll", handlers.HandleAgentEnrollment)
-	mux.HandleFunc("/security", handlers.RenderSecurityTrustPage)
-	mux.HandleFunc("/webhook/stripe", handlers.HandleStripeWebhook)
-	jwtSecret := os.Getenv("JWT_SECRET")
+	privateMux.HandleFunc("/health", handlers.HandleHealthCheck)
+	privateMux.HandleFunc("/security", handlers.RenderSecurityTrustPage)
+	privateMux.HandleFunc("/webhook/stripe", handlers.HandleStripeWebhook)
+	jwtSecret, secretErr := secretProvider.Get(startupCtx, "JWT_SECRET")
+	if secretErr != nil && os.Getenv("JWT_PRIVATE_KEY_PEM") == "" {
+		slog.Error("JWT_SECRET konnte nicht geladen werden", "error", secretErr)
+		os.Exit(1)
+	}
+	if os.Getenv("JWT_PRIVATE_KEY_PEM") == "" || os.Getenv("JWT_PUBLIC_KEY_PEM") == "" {
+		if os.Getenv("ALLOW_EPHEMERAL_JWT_KEYS") != "true" {
+			slog.Error("JWT_PRIVATE_KEY_PEM und JWT_PUBLIC_KEY_PEM müssen für Enterprise-Betrieb konfiguriert sein")
+			os.Exit(1)
+		}
+	}
 	if len(jwtSecret) < 32 {
 		slog.Error("JWT_SECRET muss mindestens 32 Zeichen lang sein")
 		os.Exit(1)
@@ -64,38 +79,57 @@ func main() {
 
 	// Geschützte API-Endpunkte mit Authentifizierung & Tenant-Isolation
 	protectedMetrics := auth.TenantAuthMiddleware(http.HandlerFunc(handlers.IngestMetrics))
-	mux.Handle("/api/v1/metrics", protectedMetrics)
+	privateMux.Handle("/api/v1/metrics", protectedMetrics)
 
-	mux.Handle("/api/v1/metrics/query", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(http.HandlerFunc(handlers.GetMetrics)))
-	mux.Handle("/api/v1/hardening/report", auth.TenantAuthMiddleware(http.HandlerFunc(handlers.HandleHardeningReport)))
-	mux.Handle("/api/v1/provisioning/trigger", middleware.EnforceTenantAndRBAC("syshaus_tech", jwtSecret)(http.HandlerFunc(handlers.TriggerProvisioning)))
+	privateMux.Handle("/api/v1/metrics/query", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(http.HandlerFunc(handlers.GetMetrics)))
+	privateMux.Handle("/api/v1/hardening/report", auth.TenantAuthMiddleware(http.HandlerFunc(handlers.HandleHardeningReport)))
+	privateMux.Handle("/api/v1/provisioning/trigger", middleware.EnforceTenantAndRBAC("syshaus_tech", jwtSecret)(http.HandlerFunc(handlers.TriggerProvisioning)))
 
 	// UI & HTMX Endpunkte
-	mux.Handle("/api/v1/ui/hardening/widget", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(http.HandlerFunc(handlers.RenderHardeningWidget)))
-	mux.Handle("/api/v1/ui/tenant/overview", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(http.HandlerFunc(handlers.RenderTenantOverview)))
-	mux.Handle("/api/v1/events", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(http.HandlerFunc(handlers.HandleSSEStream)))
-	mux.Handle("/api/v1/onboarding", middleware.EnforceTenantAndRBAC("syshaus_admin", jwtSecret)(http.HandlerFunc(handlers.GenerateOnboardingPayload)))
+	privateMux.Handle("/api/v1/ui/hardening/widget", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(http.HandlerFunc(handlers.RenderHardeningWidget)))
+	privateMux.Handle("/api/v1/ui/tenant/overview", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(http.HandlerFunc(handlers.RenderTenantOverview)))
+	privateMux.Handle("/api/v1/events", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(http.HandlerFunc(handlers.HandleSSEStream)))
+	privateMux.Handle("/api/v1/onboarding", middleware.EnforceTenantAndRBAC("syshaus_admin", jwtSecret)(http.HandlerFunc(handlers.GenerateOnboardingPayload)))
 
 	// Versionierte Agenten-Schnittstelle: Bootstrap erfolgt über Enrollment, danach über Secret und optional gebundenes mTLS-Zertifikat.
-	agentAPI := func(handler http.Handler) http.Handler { return handlers.RequireAgent(handler) }
-	mux.Handle("/agent/v1/heartbeat", agentAPI(http.HandlerFunc(handlers.HandleAgentHeartbeat)))
-	mux.Handle("/agent/v1/telemetry", agentAPI(http.HandlerFunc(handlers.HandleAgentTelemetry)))
-	mux.Handle("/agent/v1/hardening/report", agentAPI(http.HandlerFunc(handlers.HandleAgentHardeningReport)))
-	mux.Handle("/agent/v1/commands", agentAPI(http.HandlerFunc(handlers.HandleAgentCommands)))
-	mux.Handle("/agent/v1/commands/", agentAPI(http.HandlerFunc(handlers.HandleAgentCommandAck)))
-	mux.HandleFunc("/downloads/linux/sentinel-agent", handlers.ServeAgentArtifact("linux"))
-	mux.HandleFunc("/downloads/windows/sentinel-agent.exe", handlers.ServeAgentArtifact("windows"))
-	mux.HandleFunc("/downloads/linux/install.sh", handlers.ServeInstaller("linux"))
-	mux.HandleFunc("/downloads/windows/install.ps1", handlers.ServeInstaller("windows"))
-	api.SetupRoutes(mux, jwtSecret)
+	var agentLimiter *auth.RedisRateLimiter
+	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
+		options, redisErr := redis.ParseURL(redisURL)
+		if redisErr != nil {
+			slog.Error("REDIS_URL ist ungültig", "error", redisErr)
+			os.Exit(1)
+		}
+		agentLimiter = auth.NewRedisRateLimiter(redis.NewClient(options), 300, time.Minute)
+	} else {
+		slog.Error("REDIS_URL fehlt; verteilter Agent-Rate-Limiter ist nicht konfiguriert")
+		os.Exit(1)
+	}
+	agentAPI := func(handler http.Handler) http.Handler {
+		secured := handlers.RequireAgent(handler)
+		return auth.RedisRateLimitMiddleware(agentLimiter, true, secured)
+	}
+	privateMux.Handle("/agent/v1/heartbeat", agentAPI(http.HandlerFunc(handlers.HandleAgentHeartbeat)))
+	privateMux.Handle("/agent/v1/telemetry", agentAPI(http.HandlerFunc(handlers.HandleAgentTelemetry)))
+	privateMux.Handle("/agent/v1/hardening/report", agentAPI(http.HandlerFunc(handlers.HandleAgentHardeningReport)))
+	privateMux.Handle("/agent/v1/commands", agentAPI(http.HandlerFunc(handlers.HandleAgentCommands)))
+	privateMux.Handle("/agent/v1/commands/", agentAPI(http.HandlerFunc(handlers.HandleAgentCommandAck)))
+	privateMux.HandleFunc("/downloads/linux/sentinel-agent", handlers.ServeAgentArtifact("linux"))
+	privateMux.HandleFunc("/downloads/windows/sentinel-agent.exe", handlers.ServeAgentArtifact("windows"))
+	privateMux.HandleFunc("/downloads/linux/install.sh", handlers.ServeInstaller("linux"))
+	privateMux.HandleFunc("/downloads/windows/install.ps1", handlers.ServeInstaller("windows"))
+	api.SetupRoutes(privateMux, jwtSecret)
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8443"
+	publicPort := os.Getenv("PUBLIC_PORT")
+	if publicPort == "" {
+		publicPort = "8443"
+	}
+	privatePort := os.Getenv("PRIVATE_PORT")
+	if privatePort == "" {
+		privatePort = "9443"
 	}
 
 	// On-the-Fly Zertifikats-Check für den 1-Click Demo-Modus / Out-of-the-Box Start
-	if _, err := os.Stat("certs/server.crt"); os.IsNotExist(err) {
+	if _, err := os.Stat("certs/server.crt"); os.IsNotExist(err) && os.Getenv("ALLOW_EPHEMERAL_CERTS") == "true" {
 		slog.Info("Keine Zertifikate gefunden. Generiere Self-Signed Zertifikate on-the-fly...")
 		if genErr := generateSelfSignedCert(); genErr != nil {
 			slog.Error("Konnte keine Self-Signed Zertifikate generieren", "error", genErr)
@@ -105,19 +139,22 @@ func main() {
 		}
 	}
 
-	// mTLS Client CA Pool für Enterprise-Sicherheit konfigurieren
-	tlsConfig := &tls.Config{
+	// Public TLS never requests client certificates; enrollment is the only public route.
+	publicTLS := &tls.Config{
 		MinVersion: tls.VersionTLS13,
 	}
+	privateTLS := publicTLS.Clone()
+	privateTLS.ClientAuth = tls.RequireAndVerifyClientCert
+	var securityManager *auth.SecurityManager
 
-	if caCertPEM := os.Getenv("CA_CERT_PEM"); caCertPEM != "" {
+	caCertPEM, caSecretErr := secretProvider.Get(startupCtx, "CA_CERT_PEM")
+	if caSecretErr == nil && caCertPEM != "" {
 		caCertPool := x509.NewCertPool()
 		if ok := caCertPool.AppendCertsFromPEM([]byte(caCertPEM)); ok {
-			tlsConfig.ClientCAs = caCertPool
-			tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
-			slog.Info("mTLS Client-Zertifikatsverifizierung aktiviert; Enrollment bleibt per Einmal-Token bootstrapfähig.")
-			if caKeyPEM := os.Getenv("CA_KEY_PEM"); caKeyPEM != "" {
-				securityManager, managerErr := auth.NewSecurityManager([]byte(caCertPEM), []byte(caKeyPEM), jwtSecret)
+			privateTLS.ClientCAs = caCertPool
+			if caKeyPEM, keyErr := secretProvider.Get(startupCtx, "CA_KEY_PEM"); keyErr == nil && caKeyPEM != "" {
+				var managerErr error
+				securityManager, managerErr = auth.NewSecurityManager([]byte(caCertPEM), []byte(caKeyPEM), jwtSecret)
 				if managerErr != nil {
 					slog.Error("Konnte Agent-Zertifikatsausstellung nicht initialisieren", "error", managerErr)
 					os.Exit(1)
@@ -131,16 +168,31 @@ func main() {
 			slog.Error("Konnte CA-Zertifikat für mTLS nicht parsen")
 			os.Exit(1)
 		}
+	} else {
+		slog.Error("CA_CERT_PEM fehlt; privater mTLS-Listener wird nicht gestartet")
+		os.Exit(1)
 	}
+	privateMux.Handle("/.well-known/jwks.json", auth.JWKSHandler(securityManager))
+	publicMux := http.NewServeMux()
+	publicMux.HandleFunc("/enroll", handlers.HandleAgentEnrollment)
 
-	server := &http.Server{
-		Addr:              ":" + port,
-		Handler:           middleware.SecurityHeadersMiddleware(mux),
+	publicServer := &http.Server{
+		Addr:              ":" + publicPort,
+		Handler:           middleware.SecurityHeadersMiddleware(publicMux),
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
-		TLSConfig:         tlsConfig,
+		TLSConfig:         publicTLS,
+	}
+	privateServer := &http.Server{
+		Addr:              ":" + privatePort,
+		Handler:           middleware.SecurityHeadersMiddleware(privateMux),
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		TLSConfig:         privateTLS,
 	}
 
 	// Graceful Shutdown vorbereiten
@@ -148,13 +200,19 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		slog.Info("Hub Server lauscht", "port", port)
+		slog.Info("Public Enrollment-Listener lauscht", "port", publicPort)
 		if _, err := os.Stat("certs/server.crt"); err == nil {
-			if err := server.ListenAndServeTLS("certs/server.crt", "certs/server.key"); err != nil && err != http.ErrServerClosed {
+			if err := publicServer.ListenAndServeTLS("certs/server.crt", "certs/server.key"); err != nil && err != http.ErrServerClosed {
 				slog.Error("HTTPS Server abgestürzt", "error", err)
 			}
 		} else {
 			slog.Error("TLS-Zertifikate fehlen; HTTP-Fallback ist für den Beta-Betrieb deaktiviert")
+		}
+	}()
+	go func() {
+		slog.Info("Privater mTLS-Listener lauscht", "port", privatePort)
+		if err := privateServer.ListenAndServeTLS("certs/server.crt", "certs/server.key"); err != nil && err != http.ErrServerClosed {
+			slog.Error("Privater mTLS-Server abgestürzt", "error", err)
 		}
 	}()
 
@@ -164,11 +222,13 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
+	if err := publicServer.Shutdown(ctx); err != nil {
 		slog.Error("Fehler beim geordneten Server-Shutdown", "error", err)
-	} else {
-		slog.Info("Hub Server erfolgreich beendet.")
 	}
+	if err := privateServer.Shutdown(ctx); err != nil {
+		slog.Error("Fehler beim mTLS-Shutdown", "error", err)
+	}
+	slog.Info("Hub Server erfolgreich beendet.")
 }
 
 // Hilfsfunktion zur automatischen Generierung von Entwicklung-/Demo-Zertifikaten

@@ -15,6 +15,7 @@ import (
 
 type AlertPayload struct {
 	NodeID     string    `json:"node_id"`
+	TenantID   int       `json:"tenant_id"`
 	CustomerID int       `json:"customer_id"`
 	Metric     string    `json:"metric"`
 	Value      float64   `json:"value"`
@@ -29,6 +30,7 @@ var httpClient = &http.Client{
 
 // StartAlertEngine startet die periodischen Überprüfungen im Hintergrund
 func StartAlertEngine() {
+	StartOutboxWorker()
 	ticker := time.NewTicker(60 * time.Second)
 	go func() {
 		for range ticker.C {
@@ -71,6 +73,7 @@ func checkThresholds() {
 
 		dispatchAlertToIntegrations(tenantID, AlertPayload{
 			NodeID:     nodeID,
+			TenantID:   tenantID,
 			CustomerID: customerID,
 			Metric:     "CPU/RAM",
 			Value:      cpu,
@@ -111,6 +114,7 @@ func checkDeadAgents() {
 
 		dispatchAlertToIntegrations(tenantID, AlertPayload{
 			NodeID:     nodeID,
+			TenantID:   tenantID,
 			CustomerID: customerID,
 			Metric:     "HEARTBEAT",
 			Value:      0,
@@ -126,38 +130,10 @@ func dispatchAlertToIntegrations(tenantID int, alert AlertPayload) {
 		return
 	}
 
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		query := `
-			SELECT integration_type, webhook_url, COALESCE(api_token, '') 
-			FROM tenant_integrations 
-			WHERE tenant_id = $1 AND is_active = TRUE
-		`
-		rows, err := db.Pool.Query(ctx, query, tenantID)
-		if err != nil {
-			slog.Error("Failed to load tenant integrations", "tenant_id", tenantID, "error", err)
-			return
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var cfg IntegrationConfig
-			if err := rows.Scan(&cfg.Type, &cfg.WebhookURL, &cfg.APIToken); err != nil {
-				slog.Error("Failed to scan integration config", "error", err)
-				continue
-			}
-
-			if err := executeConnector(ctx, cfg, alert); err != nil {
-				slog.Warn("Integration dispatch failed",
-					"tenant_id", tenantID,
-					"type", cfg.Type,
-					"error", err,
-				)
-			}
-		}
-	}()
+	alert.TenantID = tenantID
+	if err := enqueueAlert(context.Background(), alert); err != nil {
+		slog.Error("Failed to enqueue alert", "tenant_id", tenantID, "error", err)
+	}
 }
 
 func executeConnector(ctx context.Context, cfg IntegrationConfig, alert AlertPayload) error {

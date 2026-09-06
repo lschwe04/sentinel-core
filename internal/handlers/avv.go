@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -33,14 +34,23 @@ func RenderAVVDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = db.Pool.QueryRow(r.Context(), `SELECT name FROM customers WHERE id = $1`, customerID).Scan(&customerName)
+	err = db.Pool.QueryRow(r.Context(), `
+		SELECT c.name
+		FROM customers c
+		JOIN tenants t ON t.id = c.tenant_id
+		WHERE c.id = $1 AND (t.slug = $2 OR t.id::text = $2)
+	`, customerID, tenantID).Scan(&customerName)
 	if err != nil {
 		http.Error(w, "Endkunde nicht gefunden", http.StatusNotFound)
 		return
 	}
 
 	// Dynamische Ermittlung der TOMs aus dem Hardening-Status der Kunden-Nodes
-	rows, _ := db.Pool.Query(r.Context(), `SELECT cis_level_1_compliant FROM hardening_status WHERE customer_id = $1`, customerID)
+	rows, err := db.Pool.Query(r.Context(), `SELECT cis_level_1_compliant FROM hardening_status WHERE customer_id = $1`, customerID)
+	if err != nil {
+		http.Error(w, "Compliance-Daten konnten nicht geladen werden", http.StatusInternalServerError)
+		return
+	}
 	defer rows.Close()
 
 	totalNodes := 0
@@ -52,6 +62,10 @@ func RenderAVVDocument(w http.ResponseWriter, r *http.Request) {
 		if compliant {
 			compliantNodes++
 		}
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, "Compliance-Daten konnten nicht gelesen werden", http.StatusInternalServerError)
+		return
 	}
 
 	score := 0
@@ -73,6 +87,16 @@ func RenderAVVDocument(w http.ResponseWriter, r *http.Request) {
 		ComplianceScore: score,
 	}
 
+	if r.URL.Query().Get("format") == "pdf" {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=AVV-%s.pdf", customerID))
+		lines := []string{fmt.Sprintf("Auftraggeber: %s", doc.TenantName), fmt.Sprintf("Auftragnehmer/Kunde: %s", doc.CustomerName), "Vertragsdatum: " + doc.ContractDate, fmt.Sprintf("Compliance-Score: %d%%", doc.ComplianceScore)}
+		lines = append(lines, doc.TechnicalOrgs...)
+		if err := writePDF(w, "Auftragsverarbeitungsvertrag", lines); err != nil {
+			return
+		}
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(doc)
+	_ = json.NewEncoder(w).Encode(doc)
 }

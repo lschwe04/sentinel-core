@@ -4,6 +4,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -27,7 +28,6 @@ func ExportCustomerComplianceReport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error": "tenant_id and customer_id are required"}`, http.StatusBadRequest)
 		return
 	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -63,7 +63,21 @@ func ExportCustomerComplianceReport(w http.ResponseWriter, r *http.Request) {
 	}
 	report.GeneratedAt = time.Now().UTC()
 
+	if r.URL.Query().Get("format") == "pdf" {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", "attachment; filename=compliance-report-"+customerID+".pdf")
+		lines := []string{
+			"Kunde: " + report.CustomerName,
+			fmt.Sprintf("Compliance-Score: %.1f%%", report.ScorePct),
+			fmt.Sprintf("Systeme: %d, konform: %d", report.TotalNodes, report.Compliant),
+			"Erstellt: " + report.GeneratedAt.Format(time.RFC3339),
+		}
+		if err := writePDF(w, "Compliance Report", lines); err != nil {
+			return
+		}
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=compliance-report-"+customerID+".json")
-	json.NewEncoder(w).Encode(report)
+	_ = json.NewEncoder(w).Encode(report)
 }

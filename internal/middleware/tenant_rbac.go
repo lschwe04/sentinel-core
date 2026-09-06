@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"sentinel-core/internal/auth"
 	"sentinel-core/internal/db"
 
 	"github.com/golang-jwt/jwt/v4"
@@ -44,8 +45,6 @@ type JWTClaims struct {
 
 // EnforceTenantAndRBAC validiert Tokens, prüft Live-Rechte in der DB und isoliert Mandanten
 func EnforceTenantAndRBAC(requiredRole string, jwtSecret string) func(http.Handler) http.Handler {
-	secretBytes := []byte(jwtSecret)
-
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
@@ -57,27 +56,22 @@ func EnforceTenantAndRBAC(requiredRole string, jwtSecret string) func(http.Handl
 			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 
 			// 1. JWT parsen & Signatur prüfen
-			claims := &JWTClaims{}
-			token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
-				if token.Method != jwt.SigningMethodHS256 {
-					return nil, jwt.ErrSignatureInvalid
-				}
-				return secretBytes, nil
-			})
-
-			if err != nil || !token.Valid {
+			claims, err := auth.ParseUserJWT(tokenStr)
+			if err != nil {
 				respondJSONError(w, http.StatusForbidden, "Forbidden: Invalid or expired session")
 				return
 			}
 
-			if claims.UserID == "" || claims.TenantID == "" {
+			userID, userOK := claims["sub"].(string)
+			tenantClaim, tenantOK := claims["tenant_id"].(string)
+			if !userOK || !tenantOK || userID == "" || tenantClaim == "" {
 				respondJSONError(w, http.StatusForbidden, "Forbidden: Incomplete identity context in token")
 				return
 			}
 
 			// 2. Anti-Spoofing: Verhindert das Einschleusen fremder Tenant-Header
 			headerTenantID := r.Header.Get("X-Tenant-ID")
-			if headerTenantID != "" && headerTenantID != claims.TenantID {
+			if headerTenantID != "" && headerTenantID != tenantClaim {
 				respondJSONError(w, http.StatusForbidden, "Forbidden: Tenant cross-contamination attempt detected")
 				return
 			}
@@ -95,7 +89,7 @@ func EnforceTenantAndRBAC(requiredRole string, jwtSecret string) func(http.Handl
 				JOIN roles r ON ur.role_id = r.id
 				WHERE ur.user_id = $1 AND ur.tenant_id = $2
 			`
-			err = db.Pool.QueryRow(dbCtx, query, claims.UserID, claims.TenantID).Scan(&liveRole, &dbCustomerID)
+			err = db.Pool.QueryRow(dbCtx, query, userID, tenantClaim).Scan(&liveRole, &dbCustomerID)
 			if err != nil {
 				respondJSONError(w, http.StatusForbidden, "Forbidden: Access rights revoked or user assignment missing")
 				return
@@ -125,8 +119,8 @@ func EnforceTenantAndRBAC(requiredRole string, jwtSecret string) func(http.Handl
 			}
 
 			// 6. Sicheren Kontext für nachfolgende Handler aufbauen
-			ctx := context.WithValue(r.Context(), ContextKeyUserID, claims.UserID)
-			ctx = context.WithValue(ctx, ContextKeyTenantID, claims.TenantID)
+			ctx := context.WithValue(r.Context(), ContextKeyUserID, userID)
+			ctx = context.WithValue(ctx, ContextKeyTenantID, tenantClaim)
 			ctx = context.WithValue(ctx, ContextKeyRole, liveRole)
 
 			// Kontext-Typisierung für CustomerID durchgehend als int beibehalten

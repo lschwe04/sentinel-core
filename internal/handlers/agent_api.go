@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"sentinel-core/internal/auth"
 	"sentinel-core/internal/db"
 )
 
@@ -82,10 +84,14 @@ func authenticateAgent(r *http.Request) (agentContext, error) {
 	}
 
 	if storedFingerprint != nil && *storedFingerprint != "" {
-		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 || len(r.TLS.VerifiedChains) == 0 {
 			return agentContext{}, errors.New("client certificate required")
 		}
-		fingerprint := sha256.Sum256(r.TLS.PeerCertificates[0].Raw)
+		certificate := r.TLS.PeerCertificates[0]
+		if certificate.Subject.CommonName != nodeID || !contains(certificate.Subject.Organization, "SentinelCore Tenant: "+strconv.Itoa(tenantID)) {
+			return agentContext{}, errors.New("client certificate identity mismatch")
+		}
+		fingerprint := sha256.Sum256(certificate.Raw)
 		actual := hex.EncodeToString(fingerprint[:])
 		if subtle.ConstantTimeCompare([]byte(actual), []byte(*storedFingerprint)) != 1 {
 			return agentContext{}, errors.New("client certificate mismatch")
@@ -102,8 +108,18 @@ func RequireAgent(next http.Handler) http.Handler {
 			return
 		}
 		ctx := context.WithValue(r.Context(), agentContextKey{}, identity)
+		ctx = context.WithValue(ctx, auth.AuthenticatedTenantKey, strconv.Itoa(identity.tenantID))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func contains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 type agentContextKey struct{}

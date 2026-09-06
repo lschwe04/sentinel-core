@@ -23,6 +23,9 @@ type ZammadConnector struct {
 }
 
 func (z *ZammadConnector) Dispatch(ctx context.Context, alert AlertPayload, config IntegrationConfig) error {
+	if err := validateWebhookURL(config.WebhookURL); err != nil {
+		return err
+	}
 	payload := map[string]interface{}{
 		"title":       fmt.Sprintf("[Sentinel] %s auf Node %s", alert.Severity, alert.NodeID),
 		"group":       "Users",
@@ -67,6 +70,9 @@ type TeamsConnector struct {
 }
 
 func (t *TeamsConnector) Dispatch(ctx context.Context, alert AlertPayload, config IntegrationConfig) error {
+	if err := validateWebhookURL(config.WebhookURL); err != nil {
+		return err
+	}
 	card := map[string]interface{}{
 		"@type":      "MessageCard",
 		"@context":   "http://schema.org/extensions",

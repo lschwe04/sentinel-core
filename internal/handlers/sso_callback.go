@@ -149,13 +149,12 @@ func HandleMicrosoftCallback(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 	})
 
-	// Audit Log schreiben
-	go func() {
-		_, _ = db.Pool.Exec(context.Background(),
-			`INSERT INTO security_logs (node_id, severity, source, message) VALUES ($1, $2, $3, $4)`,
-			"hub-server", "INFO", "SSO_LOGIN", fmt.Sprintf("Techniker %s erfolgreich via Microsoft Entra ID angemeldet.", userEmail),
-		)
-	}()
+	if _, err := db.Pool.Exec(r.Context(),
+		`INSERT INTO security_logs (node_id, severity, source, message) VALUES ($1, $2, $3, $4)`,
+		"hub-server", "INFO", "SSO_LOGIN", fmt.Sprintf("Techniker %s erfolgreich via Microsoft Entra ID angemeldet.", userEmail),
+	); err != nil {
+		slog.Error("SSO audit log failed", "error", err)
+	}
 
 	// Weiterleitung zum Dashboard
 	http.Redirect(w, r, "/dashboard.html", http.StatusTemporaryRedirect)
