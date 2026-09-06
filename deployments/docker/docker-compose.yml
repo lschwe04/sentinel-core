@@ -1,7 +1,9 @@
 version: '3.8'
 services:
   sentinel-core:
-    build: .
+    build: 
+      context: .
+      dockerfile: deployments/docker/Dockerfile
     ports:
       - "8443:8443"
       - "9443:9443"
