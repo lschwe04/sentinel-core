@@ -7,9 +7,13 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
+	"sentinel-core/internal/auth"
 	"sentinel-core/internal/db"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type HardeningReport struct {
@@ -21,13 +25,19 @@ type HardeningReport struct {
 
 func HandleHardeningReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeAgentError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	var report HardeningReport
-	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
-		http.Error(w, "Invalid payload", http.StatusBadRequest)
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&report); err != nil || report.NodeID == "" || len(report.NodeID) > 64 || report.OpenIssues < 0 {
+		writeAgentError(w, http.StatusBadRequest, "invalid payload")
+		return
+	}
+	tenantID, ok := r.Context().Value(auth.AuthenticatedTenantKey).(string)
+	tenantNumber, parseErr := strconv.Atoi(tenantID)
+	if !ok || parseErr != nil || tenantNumber < 1 {
+		writeAgentError(w, http.StatusForbidden, "authenticated tenant context is required")
 		return
 	}
 
@@ -35,15 +45,18 @@ func HandleHardeningReport(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	query := `
-		INSERT INTO hardening_status (node_id, cis_level_2_compliant, last_scan, open_issues)
-		VALUES ($1, $2, CURRENT_TIMESTAMP, $3)
-		ON CONFLICT (node_id) 
-		DO UPDATE SET cis_level_2_compliant = $2, last_scan = CURRENT_TIMESTAMP, open_issues = $3
+		INSERT INTO hardening_status (node_id, tenant_id, cis_level_2_compliant, last_scan, open_issues)
+		VALUES ($1, $2, $3, CURRENT_TIMESTAMP, $4)
+		ON CONFLICT (node_id)
+		DO UPDATE SET cis_level_2_compliant = $3, last_scan = CURRENT_TIMESTAMP, open_issues = $4, tenant_id = $2
 	`
-	_, err := db.Pool.Exec(ctx, query, report.NodeID, report.Success, report.OpenIssues)
+	err := db.WithTenantTx(ctx, tenantNumber, func(txCtx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(txCtx, query, report.NodeID, tenantNumber, report.Success, report.OpenIssues)
+		return err
+	})
 	if err != nil {
-		slog.Error("Fehler beim Speichern des Hardening-Reports", "error", err)
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		slog.Error("Fehler beim Speichern des Hardening-Reports", "tenant_id", tenantNumber, "node_id", report.NodeID, "error", err)
+		writeAgentError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 
@@ -58,6 +71,8 @@ func RenderHardeningWidget(w http.ResponseWriter, r *http.Request) {
 		rawNodeID = "node-local-docker"
 	}
 	safeNodeID := html.EscapeString(rawNodeID)
+	tenantID, ok := r.Context().Value(auth.AuthenticatedTenantKey).(string)
+	tenantNumber, parseErr := strconv.Atoi(tenantID)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
@@ -68,7 +83,12 @@ func RenderHardeningWidget(w http.ResponseWriter, r *http.Request) {
 	var badgeColor = "text-yellow-400"
 
 	query := `SELECT cis_level_2_compliant, open_issues FROM hardening_status WHERE node_id = $1`
-	err := db.Pool.QueryRow(ctx, query, safeNodeID).Scan(&compliant, &openIssues)
+	var err error
+	if ok && parseErr == nil && tenantNumber > 0 {
+		err = db.WithTenantTx(ctx, tenantNumber, func(txCtx context.Context, tx pgx.Tx) error {
+			return tx.QueryRow(txCtx, query, rawNodeID).Scan(&compliant, &openIssues)
+		})
+	}
 
 	if err == nil {
 		if compliant {

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,15 @@ type SecurityManager struct {
 // IssueAgentCertificateFromCSR signs only the public key supplied by the agent.
 // The Hub never receives or generates the agent private key.
 func (sm *SecurityManager) IssueAgentCertificateFromCSR(nodeID, tenantID string, csrPEM []byte, validDays int) ([]byte, error) {
+	if nodeID == "" || tenantID == "" {
+		return nil, errors.New("certificate identity is required")
+	}
+	if _, err := strconv.Atoi(tenantID); err != nil {
+		return nil, errors.New("tenant identity must be numeric")
+	}
+	if validDays < 1 || validDays > 90 {
+		return nil, errors.New("certificate validity must be between 1 and 90 days")
+	}
 	block, _ := pem.Decode(csrPEM)
 	if block == nil || block.Type != "CERTIFICATE REQUEST" {
 		return nil, errors.New("invalid certificate signing request")
@@ -80,8 +90,13 @@ func (sm *SecurityManager) IssueAgentCertificateFromCSR(nodeID, tenantID string,
 }
 
 func validateCSRKey(key any) error {
-	switch key.(type) {
-	case *ecdsa.PublicKey, ed25519.PublicKey:
+	switch publicKey := key.(type) {
+	case *ecdsa.PublicKey:
+		if publicKey.Curve == nil || publicKey.Curve.Params().BitSize < 256 {
+			return errors.New("CSR ECDSA key must be at least 256 bits")
+		}
+		return nil
+	case ed25519.PublicKey:
 		return nil
 	default:
 		return errors.New("unsupported CSR public key type")
@@ -97,6 +112,9 @@ func NewSecurityManager(caCertPEM, caKeyPEM []byte, jwtSecret string) (*Security
 	if err != nil {
 		return nil, fmt.Errorf("invalid CA cert: %w", err)
 	}
+	if !caCert.IsCA || caCert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return nil, errors.New("configured certificate is not a signing CA")
+	}
 
 	keyBlock, _ := pem.Decode(caKeyPEM)
 	if keyBlock == nil {
@@ -105,6 +123,14 @@ func NewSecurityManager(caCertPEM, caKeyPEM []byte, jwtSecret string) (*Security
 	caKey, err := x509.ParseECPrivateKey(keyBlock.Bytes)
 	if err != nil {
 		return nil, fmt.Errorf("invalid CA private key: %w", err)
+	}
+	certPublicKey, err := x509.MarshalPKIXPublicKey(caCert.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("marshal CA public key: %w", err)
+	}
+	keyPublicKey, err := x509.MarshalPKIXPublicKey(&caKey.PublicKey)
+	if err != nil || !hmac.Equal(certPublicKey, keyPublicKey) {
+		return nil, errors.New("CA certificate and private key do not match")
 	}
 
 	manager := &SecurityManager{

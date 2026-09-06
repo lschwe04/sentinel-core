@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,12 +37,19 @@ func NewRedisRateLimiter(client *redis.Client, limit int64, window time.Duration
 }
 
 func (limiter *RedisRateLimiter) Allow(ctx context.Context, tenantID string) (bool, error) {
-	tenantID = strings.TrimSpace(tenantID)
-	if tenantID == "" {
+	return limiter.allowKey(ctx, "tenant:"+strings.TrimSpace(tenantID))
+}
+
+func (limiter *RedisRateLimiter) AllowKey(ctx context.Context, identity string) (bool, error) {
+	return limiter.allowKey(ctx, "identity:"+strings.TrimSpace(identity))
+}
+
+func (limiter *RedisRateLimiter) allowKey(ctx context.Context, identity string) (bool, error) {
+	if identity == "" || strings.HasSuffix(identity, ":") {
 		return false, nil
 	}
 	windowID := time.Now().UTC().UnixMilli() / limiter.window.Milliseconds()
-	key := "sentinel:ratelimit:" + tenantID + ":" + strconv.FormatInt(windowID, 10)
+	key := "sentinel:ratelimit:" + identity + ":" + strconv.FormatInt(windowID, 10)
 	count, err := limiter.client.Eval(ctx, redisRateLimitScript, []string{key}, limiter.window.Milliseconds()).Int64()
 	if err != nil {
 		return false, err
@@ -55,7 +64,7 @@ func RedisRateLimitMiddleware(limiter *RedisRateLimiter, failClosed bool, next h
 		allowed, err := limiter.Allow(r.Context(), tenantID)
 		if err != nil {
 			if failClosed {
-				http.Error(w, `{"error":"rate limiter unavailable"}`, http.StatusServiceUnavailable)
+				writeRateLimitError(w, http.StatusServiceUnavailable, "rate limiter unavailable")
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -63,9 +72,39 @@ func RedisRateLimitMiddleware(limiter *RedisRateLimiter, failClosed bool, next h
 		}
 		if !allowed {
 			w.Header().Set("Retry-After", strconv.FormatInt(int64(limiter.window/time.Second), 10))
-			http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
+			writeRateLimitError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func RedisRateLimitByIPMiddleware(limiter *RedisRateLimiter, failClosed bool, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clientIP, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			clientIP = r.RemoteAddr
+		}
+		allowed, err := limiter.AllowKey(r.Context(), "ip:"+clientIP)
+		if err != nil {
+			if failClosed {
+				writeRateLimitError(w, http.StatusServiceUnavailable, "rate limiter unavailable")
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !allowed {
+			w.Header().Set("Retry-After", strconv.FormatInt(int64(limiter.window/time.Second), 10))
+			writeRateLimitError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func writeRateLimitError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }

@@ -19,26 +19,26 @@ func TenantAuthMiddleware(next http.Handler) http.Handler {
 
 		if tenantID == "" || authHeader == "" {
 			observability.AuthFailure()
-			http.Error(w, `{"error": "Unauthorized: Missing tenant parameters"}`, http.StatusUnauthorized)
+			writeRateLimitError(w, http.StatusUnauthorized, "unauthorized: missing tenant parameters")
 			return
 		}
 
 		if !strings.HasPrefix(authHeader, "Bearer ") {
 			observability.AuthFailure()
-			http.Error(w, `{"error": "Unauthorized: Invalid token format"}`, http.StatusUnauthorized)
+			writeRateLimitError(w, http.StatusUnauthorized, "unauthorized: invalid token format")
 			return
 		}
 
 		claims, err := ParseUserJWT(strings.TrimPrefix(authHeader, "Bearer "))
 		if err != nil {
 			observability.AuthFailure()
-			http.Error(w, `{"error": "Unauthorized: Invalid token"}`, http.StatusUnauthorized)
+			writeRateLimitError(w, http.StatusUnauthorized, "unauthorized: invalid token")
 			return
 		}
 		claimTenant, ok := claims["tenant_id"].(string)
 		if !ok || claimTenant == "" || claimTenant != tenantID {
 			observability.AuthFailure()
-			http.Error(w, `{"error": "Forbidden: Tenant mismatch"}`, http.StatusForbidden)
+			writeRateLimitError(w, http.StatusForbidden, "forbidden: tenant mismatch")
 			return
 		}
 		ctx := context.WithValue(r.Context(), TenantKey, claimTenant)

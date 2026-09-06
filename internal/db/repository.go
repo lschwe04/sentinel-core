@@ -48,8 +48,14 @@ func (MetricsRepository) Latest(ctx context.Context, tenantID, nodeID string) (M
 type AgentRepository struct{}
 
 func (AgentRepository) Touch(ctx context.Context, tenantID, nodeID string) error {
-	_, err := Pool.Exec(ctx, `UPDATE agent_credentials SET last_seen = CURRENT_TIMESTAMP WHERE tenant_id = $1 AND node_id = $2`, tenantID, nodeID)
-	return err
+	id, err := strconv.Atoi(tenantID)
+	if err != nil || id < 1 || nodeID == "" {
+		return fmt.Errorf("invalid tenant or node ID")
+	}
+	return WithTenantTx(ctx, id, func(txCtx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(txCtx, `UPDATE agent_credentials SET last_seen = CURRENT_TIMESTAMP WHERE tenant_id = $1 AND node_id = $2`, id, nodeID)
+		return err
+	})
 }
 
 func withTenant(ctx context.Context, tenantID string, fn func(pgx.Tx) error) error {

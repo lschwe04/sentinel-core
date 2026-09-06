@@ -80,22 +80,25 @@ func main() {
 	}
 
 	// Geschützte API-Endpunkte mit Authentifizierung & Tenant-Isolation
-	protectedMetrics := auth.TenantAuthMiddleware(http.HandlerFunc(handlers.IngestMetrics))
+	var agentLimiter *auth.RedisRateLimiter
+	tenantRateLimited := func(handler http.Handler) http.Handler {
+		return auth.RedisRateLimitMiddleware(agentLimiter, true, handler)
+	}
+	protectedMetrics := auth.TenantAuthMiddleware(tenantRateLimited(http.HandlerFunc(handlers.IngestMetrics)))
 	privateMux.Handle("/api/v1/metrics", protectedMetrics)
 	privateMux.HandleFunc("/metrics", observability.Handler)
 
-	privateMux.Handle("/api/v1/metrics/query", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(http.HandlerFunc(handlers.GetMetrics)))
-	privateMux.Handle("/api/v1/hardening/report", auth.TenantAuthMiddleware(http.HandlerFunc(handlers.HandleHardeningReport)))
-	privateMux.Handle("/api/v1/provisioning/trigger", middleware.EnforceTenantAndRBAC("syshaus_tech", jwtSecret)(http.HandlerFunc(handlers.TriggerProvisioning)))
+	privateMux.Handle("/api/v1/metrics/query", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(tenantRateLimited(http.HandlerFunc(handlers.GetMetrics))))
+	privateMux.Handle("/api/v1/hardening/report", auth.TenantAuthMiddleware(tenantRateLimited(http.HandlerFunc(handlers.HandleHardeningReport))))
+	privateMux.Handle("/api/v1/provisioning/trigger", middleware.EnforceTenantAndRBAC("syshaus_tech", jwtSecret)(tenantRateLimited(http.HandlerFunc(handlers.TriggerProvisioning))))
 
 	// UI & HTMX Endpunkte
-	privateMux.Handle("/api/v1/ui/hardening/widget", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(http.HandlerFunc(handlers.RenderHardeningWidget)))
-	privateMux.Handle("/api/v1/ui/tenant/overview", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(http.HandlerFunc(handlers.RenderTenantOverview)))
-	privateMux.Handle("/api/v1/events", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(http.HandlerFunc(handlers.HandleSSEStream)))
-	privateMux.Handle("/api/v1/onboarding", middleware.EnforceTenantAndRBAC("syshaus_admin", jwtSecret)(http.HandlerFunc(handlers.GenerateOnboardingPayload)))
+	privateMux.Handle("/api/v1/ui/hardening/widget", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(tenantRateLimited(http.HandlerFunc(handlers.RenderHardeningWidget))))
+	privateMux.Handle("/api/v1/ui/tenant/overview", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(tenantRateLimited(http.HandlerFunc(handlers.RenderTenantOverview))))
+	privateMux.Handle("/api/v1/events", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(tenantRateLimited(http.HandlerFunc(handlers.HandleSSEStream))))
+	privateMux.Handle("/api/v1/onboarding", middleware.EnforceTenantAndRBAC("syshaus_admin", jwtSecret)(tenantRateLimited(http.HandlerFunc(handlers.GenerateOnboardingPayload))))
 
 	// Versionierte Agenten-Schnittstelle: Bootstrap erfolgt über Enrollment, danach über Secret und optional gebundenes mTLS-Zertifikat.
-	var agentLimiter *auth.RedisRateLimiter
 	var redisClient *redis.Client
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
 		options, redisErr := redis.ParseURL(redisURL)
@@ -180,7 +183,7 @@ func main() {
 	}
 	privateMux.Handle("/.well-known/jwks.json", auth.JWKSHandler(securityManager))
 	publicMux := http.NewServeMux()
-	publicMux.HandleFunc("/enroll", handlers.HandleAgentEnrollment)
+	publicMux.Handle("/enroll", auth.RedisRateLimitByIPMiddleware(agentLimiter, true, http.HandlerFunc(handlers.HandleAgentEnrollment)))
 
 	publicServer := &http.Server{
 		Addr:              ":" + publicPort,

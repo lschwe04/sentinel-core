@@ -31,7 +31,7 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 		tenantID := r.Header.Get("X-Tenant-ID")
 		if tenantID != "" {
 			if !getTenantLimiter(tenantID).Allow() {
-				http.Error(w, `{"error": "Rate limit exceeded"}`, http.StatusTooManyRequests)
+				writeRateLimitError(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return
 			}
 		}

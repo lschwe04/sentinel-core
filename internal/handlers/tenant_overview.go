@@ -4,10 +4,15 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
+	"sentinel-core/internal/auth"
 	"sentinel-core/internal/db"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type CustomerSummary struct {
@@ -20,11 +25,12 @@ type CustomerSummary struct {
 
 // RenderTenantOverview stellt das mandantenfähige Systemhaus-Dashboard bereit
 func RenderTenantOverview(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "1"
+	tenantID, ok := r.Context().Value(auth.AuthenticatedTenantKey).(string)
+	tenantNumber, parseErr := strconv.Atoi(tenantID)
+	if !ok || parseErr != nil || tenantNumber < 1 {
+		writeAgentError(w, http.StatusForbidden, "authenticated tenant context is required")
+		return
 	}
-	safeTenantID := html.EscapeString(tenantID)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -39,23 +45,33 @@ func RenderTenantOverview(w http.ResponseWriter, r *http.Request) {
 		GROUP BY c.id, c.name
 	`
 
-	rows, err := db.Pool.Query(ctx, query, safeTenantID)
 	var customers []CustomerSummary
-	if err == nil {
+	err := db.WithTenantTx(ctx, tenantNumber, func(txCtx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(txCtx, query, tenantNumber)
+		if err != nil {
+			return err
+		}
 		defer rows.Close()
 		for rows.Next() {
 			var cs CustomerSummary
-			if err := rows.Scan(&cs.ID, &cs.Name, &cs.TotalNodes, &cs.CompliancePct); err == nil {
-				if cs.CompliancePct >= 90.0 {
-					cs.Status = "Optimal"
-				} else if cs.CompliancePct >= 50.0 {
-					cs.Status = "Warnung"
-				} else {
-					cs.Status = "Kritisch"
-				}
-				customers = append(customers, cs)
+			if err := rows.Scan(&cs.ID, &cs.Name, &cs.TotalNodes, &cs.CompliancePct); err != nil {
+				return err
 			}
+			if cs.CompliancePct >= 90.0 {
+				cs.Status = "Optimal"
+			} else if cs.CompliancePct >= 50.0 {
+				cs.Status = "Warnung"
+			} else {
+				cs.Status = "Kritisch"
+			}
+			customers = append(customers, cs)
 		}
+		return rows.Err()
+	})
+	if err != nil {
+		slog.Error("Tenant-Overview konnte nicht geladen werden", "tenant_id", tenantNumber, "error", err)
+		writeAgentError(w, http.StatusInternalServerError, "tenant overview unavailable")
+		return
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

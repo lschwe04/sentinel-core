@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -106,13 +107,24 @@ func RequireAgent(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		identity, err := authenticateAgent(r)
 		if err != nil {
-			http.Error(w, `{"error":"unauthorized agent"}`, http.StatusUnauthorized)
+			slog.Warn("agent authentication failed", "path", r.URL.Path, "error", err)
+			writeAgentError(w, http.StatusUnauthorized, "unauthorized agent")
 			return
 		}
 		ctx := context.WithValue(r.Context(), agentContextKey{}, identity)
 		ctx = context.WithValue(ctx, auth.AuthenticatedTenantKey, strconv.Itoa(identity.tenantID))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func writeAgentError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+func logAgentStorageError(r *http.Request, operation string, err error) {
+	slog.Error("agent request failed", "operation", operation, "path", r.URL.Path, "error", err)
 }
 
 func contains(values []string, wanted string) bool {
@@ -132,13 +144,13 @@ func agentIdentity(r *http.Request) agentContext {
 
 func HandleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAgentError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	identity := agentIdentity(r)
 	var request heartbeatRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&request); err != nil {
-		http.Error(w, `{"error":"invalid heartbeat"}`, http.StatusBadRequest)
+		writeAgentError(w, http.StatusBadRequest, "invalid heartbeat")
 		return
 	}
 	if request.Status == "" {
@@ -148,7 +160,8 @@ func HandleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	_, err := db.Pool.Exec(ctx, `UPDATE agent_credentials SET last_seen = CURRENT_TIMESTAMP WHERE node_id = $1 AND tenant_id = $2`, identity.nodeID, identity.tenantID)
 	if err != nil {
-		http.Error(w, `{"error":"heartbeat storage failed"}`, http.StatusInternalServerError)
+		logAgentStorageError(r, "heartbeat", err)
+		writeAgentError(w, http.StatusInternalServerError, "heartbeat storage failed")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -157,17 +170,17 @@ func HandleAgentHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 func HandleAgentTelemetry(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAgentError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	identity := agentIdentity(r)
 	var telemetry telemetryRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&telemetry); err != nil {
-		http.Error(w, `{"error":"invalid telemetry"}`, http.StatusBadRequest)
+		writeAgentError(w, http.StatusBadRequest, "invalid telemetry")
 		return
 	}
 	if telemetry.CPUUsagePct < 0 || telemetry.CPUUsagePct > 100 || telemetry.RAMUsagePct < 0 || telemetry.RAMUsagePct > 100 || telemetry.DiskUsagePct < 0 || telemetry.DiskUsagePct > 100 || telemetry.UptimeHours < 0 {
-		http.Error(w, `{"error":"telemetry values out of bounds"}`, http.StatusUnprocessableEntity)
+		writeAgentError(w, http.StatusUnprocessableEntity, "telemetry values out of bounds")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
@@ -184,7 +197,8 @@ func HandleAgentTelemetry(w http.ResponseWriter, r *http.Request) {
 		return err
 	})
 	if err != nil {
-		http.Error(w, `{"error":"telemetry storage failed"}`, http.StatusInternalServerError)
+		logAgentStorageError(r, "telemetry", err)
+		writeAgentError(w, http.StatusInternalServerError, "telemetry storage failed")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -194,25 +208,29 @@ func HandleAgentTelemetry(w http.ResponseWriter, r *http.Request) {
 
 func HandleAgentHardeningReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAgentError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	identity := agentIdentity(r)
 	var report agentHardeningReport
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&report); err != nil || report.OpenIssues < 0 {
-		http.Error(w, `{"error":"invalid hardening report"}`, http.StatusBadRequest)
+		writeAgentError(w, http.StatusBadRequest, "invalid hardening report")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	_, err := db.Pool.Exec(ctx, `
-		INSERT INTO hardening_status (node_id, cis_level_2_compliant, last_scan, open_issues)
-		VALUES ($1, $2, CURRENT_TIMESTAMP, $3)
+	err := db.WithTenantTx(ctx, identity.tenantID, func(txCtx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(txCtx, `
+		INSERT INTO hardening_status (node_id, tenant_id, cis_level_2_compliant, last_scan, open_issues)
+		VALUES ($1, $2, $3, CURRENT_TIMESTAMP, $4)
 		ON CONFLICT (node_id) DO UPDATE SET cis_level_2_compliant = EXCLUDED.cis_level_2_compliant,
-		last_scan = CURRENT_TIMESTAMP, open_issues = EXCLUDED.open_issues
-	`, identity.nodeID, report.Success, report.OpenIssues)
+		last_scan = CURRENT_TIMESTAMP, open_issues = EXCLUDED.open_issues, tenant_id = EXCLUDED.tenant_id
+	`, identity.nodeID, identity.tenantID, report.Success, report.OpenIssues)
+		return err
+	})
 	if err != nil {
-		http.Error(w, `{"error":"hardening report storage failed"}`, http.StatusInternalServerError)
+		logAgentStorageError(r, "hardening report", err)
+		writeAgentError(w, http.StatusInternalServerError, "hardening report storage failed")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -221,36 +239,39 @@ func HandleAgentHardeningReport(w http.ResponseWriter, r *http.Request) {
 
 func HandleAgentCommands(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAgentError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	identity := agentIdentity(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	tx, err := db.Pool.Begin(ctx)
-	if err != nil {
-		http.Error(w, `{"error":"command storage failed"}`, http.StatusInternalServerError)
-		return
-	}
-	defer tx.Rollback(ctx)
 	var command agentCommand
-	err = tx.QueryRow(ctx, `
+	commandFound := false
+	err := db.WithTenantTx(ctx, identity.tenantID, func(txCtx context.Context, tx pgx.Tx) error {
+		err := tx.QueryRow(txCtx, `
 		SELECT id::text, command_type, payload, expires_at
 		FROM agent_commands
 		WHERE node_id = $1 AND tenant_id = $2 AND status = 'pending' AND expires_at > CURRENT_TIMESTAMP
 		ORDER BY created_at
 		FOR UPDATE SKIP LOCKED LIMIT 1
 	`, identity.nodeID, identity.tenantID).Scan(&command.ID, &command.CommandType, &command.Payload, &command.ExpiresAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		commandFound = true
+		_, err = tx.Exec(txCtx, `UPDATE agent_commands SET status = 'delivered', delivered_at = CURRENT_TIMESTAMP WHERE id = $1`, command.ID)
+		return err
+	})
 	if err != nil {
+		logAgentStorageError(r, "command delivery", err)
+		writeAgentError(w, http.StatusInternalServerError, "command delivery failed")
+		return
+	}
+	if !commandFound {
 		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if _, err = tx.Exec(ctx, `UPDATE agent_commands SET status = 'delivered', delivered_at = CURRENT_TIMESTAMP WHERE id = $1`, command.ID); err != nil {
-		http.Error(w, `{"error":"command delivery failed"}`, http.StatusInternalServerError)
-		return
-	}
-	if err = tx.Commit(ctx); err != nil {
-		http.Error(w, `{"error":"command delivery commit failed"}`, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -259,37 +280,39 @@ func HandleAgentCommands(w http.ResponseWriter, r *http.Request) {
 
 func HandleAgentCommandAck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAgentError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	identity := agentIdentity(r)
 	commandID := strings.TrimPrefix(r.URL.Path, "/agent/v1/commands/")
 	commandID = strings.TrimSuffix(commandID, "/ack")
 	if commandID == "" || strings.Contains(commandID, "/") {
-		http.Error(w, `{"error":"invalid command id"}`, http.StatusBadRequest)
+		writeAgentError(w, http.StatusBadRequest, "invalid command id")
 		return
 	}
 	var ack commandAck
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&ack); err != nil || (ack.Status != "acknowledged" && ack.Status != "failed") {
-		http.Error(w, `{"error":"invalid command acknowledgement"}`, http.StatusBadRequest)
+		writeAgentError(w, http.StatusBadRequest, "invalid command acknowledgement")
 		return
 	}
 	result, err := json.Marshal(ack.Result)
 	if err != nil {
-		http.Error(w, `{"error":"invalid command result"}`, http.StatusBadRequest)
+		writeAgentError(w, http.StatusBadRequest, "invalid command result")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	commandStatus := ack.Status
 	var updated int
-	err = db.Pool.QueryRow(ctx, `
+	err = db.WithTenantTx(ctx, identity.tenantID, func(txCtx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(txCtx, `
 		UPDATE agent_commands SET status = $1, result = $2, acknowledged_at = CURRENT_TIMESTAMP
 		WHERE id = $3::uuid AND node_id = $4 AND tenant_id = $5 AND status = 'delivered'
 		RETURNING 1
 	`, commandStatus, result, commandID, identity.nodeID, identity.tenantID).Scan(&updated)
+	})
 	if err != nil || updated != 1 {
-		http.Error(w, `{"error":"command not found or already acknowledged"}`, http.StatusConflict)
+		writeAgentError(w, http.StatusConflict, "command not found or already acknowledged")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -298,7 +321,7 @@ func HandleAgentCommandAck(w http.ResponseWriter, r *http.Request) {
 func ServeAgentArtifact(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			writeAgentError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		var envName string
@@ -318,24 +341,24 @@ func ServeAgentArtifact(kind string) http.HandlerFunc {
 		}
 		path, err := filepath.Abs(path)
 		if err != nil {
-			http.Error(w, "artifact unavailable", http.StatusNotFound)
+			writeAgentError(w, http.StatusNotFound, "artifact unavailable")
 			return
 		}
 		info, err := os.Stat(path)
 		if err != nil || !info.Mode().IsRegular() {
-			http.Error(w, "artifact unavailable", http.StatusNotFound)
+			writeAgentError(w, http.StatusNotFound, "artifact unavailable")
 			return
 		}
 		file, err := os.Open(path)
 		if err != nil {
-			http.Error(w, "artifact unavailable", http.StatusNotFound)
+			writeAgentError(w, http.StatusNotFound, "artifact unavailable")
 			return
 		}
 		hash := sha256.New()
 		_, hashErr := io.Copy(hash, file)
 		closeErr := file.Close()
 		if hashErr != nil || closeErr != nil {
-			http.Error(w, "artifact unavailable", http.StatusInternalServerError)
+			writeAgentError(w, http.StatusInternalServerError, "artifact unavailable")
 			return
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -348,7 +371,7 @@ func ServeAgentArtifact(kind string) http.HandlerFunc {
 func ServeInstaller(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			writeAgentError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		filename := map[string]string{"linux": "install-agent.sh", "windows": "install-agent.ps1"}[kind]
@@ -362,12 +385,12 @@ func ServeInstaller(kind string) http.HandlerFunc {
 		}
 		path, err := filepath.Abs(filepath.Join(baseDir, kind, filename))
 		if err != nil {
-			http.Error(w, "installer unavailable", http.StatusNotFound)
+			writeAgentError(w, http.StatusNotFound, "installer unavailable")
 			return
 		}
 		info, err := os.Stat(path)
 		if err != nil || !info.Mode().IsRegular() {
-			http.Error(w, "installer unavailable", http.StatusNotFound)
+			writeAgentError(w, http.StatusNotFound, "installer unavailable")
 			return
 		}
 		if kind == "linux" {

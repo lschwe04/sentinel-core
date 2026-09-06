@@ -12,10 +12,20 @@ spec:
       labels:
         app: {{ include "sentinel-core.fullname" . }}
     spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: sentinel-core
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: public
               containerPort: {{ .Values.service.publicPort }}
@@ -25,21 +35,30 @@ spec:
             - secretRef:
                 name: {{ include "sentinel-core.fullname" . }}
           env:
+            - name: PUBLIC_PORT
+              value: {{ .Values.service.publicPort | quote }}
+            - name: PRIVATE_PORT
+              value: {{ .Values.service.privatePort | quote }}
+            - name: ALLOW_EPHEMERAL_CERTS
+              value: "false"
             - name: ALLOW_EPHEMERAL_JWT_KEYS
               value: "false"
           readinessProbe:
             httpGet:
               path: /readyz
-              port: public
+              port: private
               scheme: HTTPS
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
           livenessProbe:
             httpGet:
               path: /healthz
-              port: public
+              port: private
               scheme: HTTPS
-            initialDelaySeconds: 5
+            initialDelaySeconds: 20
             periodSeconds: 15
-          resources:
-{{ toYaml .Values.resources | indent 12 }}
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources: {}

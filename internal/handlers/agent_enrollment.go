@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -36,6 +37,10 @@ type EnrollmentResponse struct {
 
 var agentSecurityManager *auth.SecurityManager
 
+func logEnrollmentError(r *http.Request, operation string, err error) {
+	slog.Error("agent enrollment failed", "operation", operation, "path", r.URL.Path, "error", err)
+}
+
 func ConfigureAgentSecurityManager(manager *auth.SecurityManager) {
 	agentSecurityManager = manager
 }
@@ -43,7 +48,7 @@ func ConfigureAgentSecurityManager(manager *auth.SecurityManager) {
 // HandleAgentEnrollment verarbeitet die Erstregistrierung eines neuen Endpunkt-Agenten
 func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeAgentError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -52,15 +57,15 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 
 	var req EnrollmentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.EnrollmentToken == "" {
-		http.Error(w, `{"error": "Invalid request payload or missing token"}`, http.StatusBadRequest)
+		writeAgentError(w, http.StatusBadRequest, "invalid request payload or missing token")
 		return
 	}
 	if req.Hostname == "" || req.HardwareUUID == "" || req.CSR == "" {
-		http.Error(w, `{"error": "hostname, hardware_uuid and csr are required"}`, http.StatusBadRequest)
+		writeAgentError(w, http.StatusBadRequest, "hostname, hardware_uuid and csr are required")
 		return
 	}
 	if len(req.Hostname) > 255 || len(req.HardwareUUID) > 255 || len(req.OSVersion) > 255 {
-		http.Error(w, `{"error": "device metadata is too long"}`, http.StatusBadRequest)
+		writeAgentError(w, http.StatusBadRequest, "device metadata is too long")
 		return
 	}
 
@@ -70,7 +75,8 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := db.Pool.Begin(ctx)
 	if err != nil {
-		http.Error(w, `{"error": "Internal database error"}`, http.StatusInternalServerError)
+		logEnrollmentError(r, "begin transaction", err)
+		writeAgentError(w, http.StatusInternalServerError, "internal database error")
 		return
 	}
 	defer tx.Rollback(ctx)
@@ -88,25 +94,28 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 	`
 	err = tx.QueryRow(ctx, query, tokenHash).Scan(&tokenID, &tenantID, &isUsed, &expiresAt)
 	if err != nil || isUsed || time.Now().After(expiresAt) {
-		http.Error(w, `{"error": "Invalid, expired, or already consumed enrollment token"}`, http.StatusUnauthorized)
+		writeAgentError(w, http.StatusUnauthorized, "invalid, expired, or already consumed enrollment token")
 		return
 	}
 	if _, err = tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, strconv.Itoa(tenantID)); err != nil {
-		http.Error(w, `{"error":"failed to establish tenant database context"}`, http.StatusInternalServerError)
+		logEnrollmentError(r, "set tenant context", err)
+		writeAgentError(w, http.StatusInternalServerError, "failed to establish tenant database context")
 		return
 	}
 
 	// Token als verbraucht markieren (Einmalverwendung erzwingen)
 	_, err = tx.Exec(ctx, `UPDATE enrollment_tokens SET is_used = TRUE WHERE id = $1`, tokenID)
 	if err != nil {
-		http.Error(w, `{"error": "Failed to update token status"}`, http.StatusInternalServerError)
+		logEnrollmentError(r, "consume enrollment token", err)
+		writeAgentError(w, http.StatusInternalServerError, "failed to update token status")
 		return
 	}
 
 	// Die Node-ID ist zufällig und unveränderlich; Hardwaredaten dienen nur der Nachvollziehbarkeit.
 	nodeIDBytes := make([]byte, 16)
 	if _, err := rand.Read(nodeIDBytes); err != nil {
-		http.Error(w, `{"error": "Failed to generate agent identity"}`, http.StatusInternalServerError)
+		logEnrollmentError(r, "generate agent identity", err)
+		writeAgentError(w, http.StatusInternalServerError, "failed to generate agent identity")
 		return
 	}
 	agentID := hex.EncodeToString(nodeIDBytes)
@@ -114,7 +123,8 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 	// Kryptografisch sichere Zufallszahlen für das mTLS Shared Secret
 	randBytes := make([]byte, 32)
 	if _, err := rand.Read(randBytes); err != nil {
-		http.Error(w, `{"error": "Failed to generate secure credentials"}`, http.StatusInternalServerError)
+		logEnrollmentError(r, "generate shared secret", err)
+		writeAgentError(w, http.StatusInternalServerError, "failed to generate secure credentials")
 		return
 	}
 	sharedSecret := hex.EncodeToString(randBytes)
@@ -125,17 +135,19 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 	if agentSecurityManager != nil {
 		certPEM, issueErr := agentSecurityManager.IssueAgentCertificateFromCSR(agentID, strconv.Itoa(tenantID), []byte(req.CSR), 30)
 		if issueErr != nil {
-			http.Error(w, `{"error": "Failed to issue client certificate"}`, http.StatusInternalServerError)
+			logEnrollmentError(r, "issue client certificate", issueErr)
+			writeAgentError(w, http.StatusInternalServerError, "failed to issue client certificate")
 			return
 		}
 		block, _ := pem.Decode(certPEM)
 		if block == nil {
-			http.Error(w, `{"error": "Failed to encode client certificate"}`, http.StatusInternalServerError)
+			writeAgentError(w, http.StatusInternalServerError, "failed to encode client certificate")
 			return
 		}
 		cert, parseErr := x509.ParseCertificate(block.Bytes)
 		if parseErr != nil {
-			http.Error(w, `{"error": "Failed to parse client certificate"}`, http.StatusInternalServerError)
+			logEnrollmentError(r, "parse client certificate", parseErr)
+			writeAgentError(w, http.StatusInternalServerError, "failed to parse client certificate")
 			return
 		}
 		fingerprint := sha256.Sum256(cert.Raw)
@@ -151,7 +163,8 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 		ON CONFLICT (node_id) DO NOTHING
 	`, agentID, tenantID)
 	if err != nil {
-		http.Error(w, `{"error": "Database error registering agent hardware record"}`, http.StatusInternalServerError)
+		logEnrollmentError(r, "register hardening record", err)
+		writeAgentError(w, http.StatusInternalServerError, "database error registering agent hardware record")
 		return
 	}
 	_, err = tx.Exec(ctx, `
@@ -159,7 +172,8 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''))
 	`, agentID, tenantID, sharedSecretHash, req.Hostname, req.HardwareUUID, req.OSVersion, certificateFingerprint)
 	if err != nil {
-		http.Error(w, `{"error": "Database error storing agent credentials"}`, http.StatusInternalServerError)
+		logEnrollmentError(r, "store agent credentials", err)
+		writeAgentError(w, http.StatusInternalServerError, "database error storing agent credentials")
 		return
 	}
 	auditPayload, err := json.Marshal(map[string]any{
@@ -167,19 +181,22 @@ func HandleAgentEnrollment(w http.ResponseWriter, r *http.Request) {
 		"payload": map[string]any{"hostname": req.Hostname, "hardware_uuid": req.HardwareUUID},
 	})
 	if err != nil {
-		http.Error(w, `{"error":"audit event failed"}`, http.StatusInternalServerError)
+		logEnrollmentError(r, "marshal audit event", err)
+		writeAgentError(w, http.StatusInternalServerError, "audit event failed")
 		return
 	}
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO event_outbox (tenant_id, event_type, deduplication_key, payload)
 		VALUES ($1, 'audit.event', $2, $3) ON CONFLICT (event_type, deduplication_key) DO NOTHING
 	`, tenantID, "agent-enroll:"+agentID, auditPayload); err != nil {
-		http.Error(w, `{"error":"audit event storage failed"}`, http.StatusInternalServerError)
+		logEnrollmentError(r, "store audit event", err)
+		writeAgentError(w, http.StatusInternalServerError, "audit event storage failed")
 		return
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		http.Error(w, `{"error": "Transaction commit failure"}`, http.StatusInternalServerError)
+		logEnrollmentError(r, "commit enrollment", err)
+		writeAgentError(w, http.StatusInternalServerError, "transaction commit failure")
 		return
 	}
 

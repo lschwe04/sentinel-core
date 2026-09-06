@@ -8,7 +8,7 @@ spec:
     matchLabels:
       app: {{ include "sentinel-core.fullname" . }}
   endpoints:
-    - port: public
+    - port: private
       path: /metrics
       scheme: https
 {{- end }}

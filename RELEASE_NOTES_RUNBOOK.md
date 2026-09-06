@@ -1,11 +1,18 @@
 # SentinelCore Hub
 ## Release Notes & Deployment Runbook
 
-**Release:** Phase 2 Enterprise Readiness
+**Release:** Beta 1.0
 **Zielgruppe:** DevOps, SRE, Security Operations
 **Geltungsbereich:** DACH-Staging und Produktion
 
 ## 1. Change Summary
+
+### Beta-Freigabestatus
+
+- Agenten-Telemetrie, Hardening-Reports, Command-Polling und Quittierungen verwenden tenantgebundene Transaktionen.
+- PostgreSQL-RLS ist fuer `node_metrics`, `hardening_status`, `security_logs`, `agent_commands` und `event_outbox` aktiviert und erzwingt `app.tenant_id`.
+- Redis limitiert Management- und Agentenrouten tenantbezogen; Enrollment wird zusaetzlich pro Quell-IP begrenzt und fail-closed behandelt.
+- Helm-Probes zeigen auf den privaten mTLS-Listener; der Container laeuft non-root mit read-only Root-Filesystem.
 
 ### Netzwerk und mTLS
 
@@ -112,6 +119,15 @@ ALLOW_EPHEMERAL_JWT_KEYS=false
 
 ## 3. Migrations- und Deployment-Pfad
 
+### 3.0 Beta-Schnellpfad
+
+1. Datenbank-Backup erstellen und den dedizierten App-User ohne `SUPERUSER`/`BYPASSRLS` pruefen.
+2. CA, Serverzertifikat und Ed25519-JWT-Schluessel aus Vault/KMS bereitstellen; niemals private Schluessel in Git committen.
+3. Redis mit TLS/ACL konfigurieren und mit `REDIS_URL` verbinden.
+4. Mit dem Helm-Chart deployen und `/healthz` sowie `/readyz` ueber Port 9443 mit Client-Zertifikat pruefen.
+5. Einen Test-Tenant enrollen, CSR-Zertifikat verifizieren und einen gestaffelten Agent-Rollout starten.
+6. Cross-Tenant-RLS, Redis-Failover und Command-Ack pruefen, bevor weitere Tenants freigeschaltet werden.
+
 ### 3.1 Vorprüfung in Staging
 
 1. Release-Artefakt, Go-Modul-Checksums und alle neuen Dateien in den Release-Commit aufnehmen. Besonders prüfen:
@@ -122,7 +138,14 @@ ALLOW_EPHEMERAL_JWT_KEYS=false
    - `internal/config/`
    - `internal/db/tenant.go`
    - `internal/services/outbox.go`
-2. `go test ./...` ausführen.
+2. Tests ausführen. In Umgebungen ohne CGO bzw. ohne installierten C-Compiler:
+
+   ```powershell
+   $env:CGO_ENABLED = "0"
+   go test -v ./...
+   ```
+
+   Der Race Detector benötigt dagegen `CGO_ENABLED=1` und einen verfügbaren C-Compiler wie GCC. Ohne diese Toolchain ist `go test -race` nicht ausführbar.
 3. TLS-Serverzertifikat, CA-Zertifikat und Ed25519-JWT-Schlüsselpaar erzeugen bzw. aus Vault beziehen.
 4. Prüfen, dass `JWT_PUBLIC_KEY_PEM` exakt zum privaten Schlüssel gehört und `JWT_KEY_ID` gesetzt ist.
 5. Redis-Failover testen: während laufender Agentenrequests einen Sentinel-/Cluster-Failover auslösen. Erwartung: kontrollierte `503`-Antworten, keine unlimitierten Requests.

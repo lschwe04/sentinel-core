@@ -109,6 +109,7 @@ func RunMigrations() error {
 		uptime_hours INT DEFAULT 0,
 		recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);
+	ALTER TABLE node_metrics ADD COLUMN IF NOT EXISTS tenant_id INT;
 
 	CREATE TABLE IF NOT EXISTS event_outbox (
 		id BIGSERIAL PRIMARY KEY,
@@ -119,9 +120,33 @@ func RunMigrations() error {
 		status VARCHAR(16) NOT NULL DEFAULT 'pending',
 		available_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 		attempts INT NOT NULL DEFAULT 0,
+		locked_at TIMESTAMP WITH TIME ZONE,
+		delivered_at TIMESTAMP WITH TIME ZONE,
 		last_error TEXT,
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(event_type, deduplication_key)
+	);
+	ALTER TABLE event_outbox ADD COLUMN IF NOT EXISTS locked_at TIMESTAMP WITH TIME ZONE;
+	ALTER TABLE event_outbox ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP WITH TIME ZONE;
+
+	CREATE TABLE IF NOT EXISTS alert_state (
+		deduplication_key VARCHAR(255) PRIMARY KEY,
+		tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		status VARCHAR(16) NOT NULL DEFAULT 'open',
+		first_seen TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		last_seen TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		last_delivered_at TIMESTAMP WITH TIME ZONE,
+		recovery_at TIMESTAMP WITH TIME ZONE,
+		payload JSONB NOT NULL DEFAULT '{}'::jsonb
+	);
+
+	CREATE TABLE IF NOT EXISTS event_dead_letters (
+		id BIGSERIAL PRIMARY KEY,
+		outbox_id BIGINT NOT NULL REFERENCES event_outbox(id) ON DELETE CASCADE,
+		tenant_id INT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		payload JSONB NOT NULL,
+		error TEXT NOT NULL,
+		failed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
 	CREATE TABLE IF NOT EXISTS audit_logs (
@@ -152,22 +177,30 @@ func RunMigrations() error {
 
 	CREATE TABLE IF NOT EXISTS hardening_status (
 		node_id VARCHAR(64) PRIMARY KEY,
+		tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
 		customer_id INT REFERENCES customers(id) ON DELETE CASCADE,
 		cis_level_1_compliant BOOLEAN DEFAULT FALSE,
 		cis_level_2_compliant BOOLEAN DEFAULT FALSE,
 		last_scan TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 		open_issues INT DEFAULT 0
 	);
+	ALTER TABLE hardening_status ADD COLUMN IF NOT EXISTS tenant_id INT;
+	ALTER TABLE hardening_status DROP CONSTRAINT IF EXISTS hardening_status_tenant_fk;
+	ALTER TABLE hardening_status ADD CONSTRAINT hardening_status_tenant_fk FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE;
 
 	CREATE TABLE IF NOT EXISTS security_logs (
 		id BIGSERIAL PRIMARY KEY,
 		node_id VARCHAR(64) NOT NULL,
+		tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
 		customer_id INT REFERENCES customers(id) ON DELETE CASCADE,
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 		severity VARCHAR(16),
 		source VARCHAR(32),
 		message TEXT
 	);
+	ALTER TABLE security_logs ADD COLUMN IF NOT EXISTS tenant_id INT;
+	ALTER TABLE security_logs DROP CONSTRAINT IF EXISTS security_logs_tenant_fk;
+	ALTER TABLE security_logs ADD CONSTRAINT security_logs_tenant_fk FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE;
 
 	CREATE TABLE IF NOT EXISTS backups (
 		node_id VARCHAR(64) PRIMARY KEY,
@@ -208,6 +241,44 @@ func RunMigrations() error {
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(tenant_id, integration_type)
 	);
+
+	-- Tenantkritische Tabellen muessen auch bei versehentlichen Pool-Zugriffen isoliert bleiben.
+	ALTER TABLE hardening_status ENABLE ROW LEVEL SECURITY;
+	ALTER TABLE hardening_status FORCE ROW LEVEL SECURITY;
+	DROP POLICY IF EXISTS hardening_status_tenant_isolation ON hardening_status;
+	CREATE POLICY hardening_status_tenant_isolation ON hardening_status
+		USING (tenant_id::text = current_setting('app.tenant_id', true))
+		WITH CHECK (tenant_id::text = current_setting('app.tenant_id', true));
+	ALTER TABLE security_logs ENABLE ROW LEVEL SECURITY;
+	ALTER TABLE security_logs FORCE ROW LEVEL SECURITY;
+	DROP POLICY IF EXISTS security_logs_tenant_isolation ON security_logs;
+	CREATE POLICY security_logs_tenant_isolation ON security_logs
+		USING (tenant_id::text = current_setting('app.tenant_id', true))
+		WITH CHECK (tenant_id::text = current_setting('app.tenant_id', true));
+	ALTER TABLE agent_commands ENABLE ROW LEVEL SECURITY;
+	ALTER TABLE agent_commands FORCE ROW LEVEL SECURITY;
+	DROP POLICY IF EXISTS agent_commands_tenant_isolation ON agent_commands;
+	CREATE POLICY agent_commands_tenant_isolation ON agent_commands
+		USING (tenant_id::text = current_setting('app.tenant_id', true))
+		WITH CHECK (tenant_id::text = current_setting('app.tenant_id', true));
+	ALTER TABLE event_outbox ENABLE ROW LEVEL SECURITY;
+	ALTER TABLE event_outbox FORCE ROW LEVEL SECURITY;
+	DROP POLICY IF EXISTS event_outbox_tenant_isolation ON event_outbox;
+	CREATE POLICY event_outbox_tenant_isolation ON event_outbox
+		USING (tenant_id::text = current_setting('app.tenant_id', true))
+		WITH CHECK (tenant_id::text = current_setting('app.tenant_id', true));
+	ALTER TABLE alert_state ENABLE ROW LEVEL SECURITY;
+	ALTER TABLE alert_state FORCE ROW LEVEL SECURITY;
+	DROP POLICY IF EXISTS alert_state_tenant_isolation ON alert_state;
+	CREATE POLICY alert_state_tenant_isolation ON alert_state
+		USING (tenant_id::text = current_setting('app.tenant_id', true))
+		WITH CHECK (tenant_id::text = current_setting('app.tenant_id', true));
+	ALTER TABLE event_dead_letters ENABLE ROW LEVEL SECURITY;
+	ALTER TABLE event_dead_letters FORCE ROW LEVEL SECURITY;
+	DROP POLICY IF EXISTS event_dead_letters_tenant_isolation ON event_dead_letters;
+	CREATE POLICY event_dead_letters_tenant_isolation ON event_dead_letters
+		USING (tenant_id::text = current_setting('app.tenant_id', true))
+		WITH CHECK (tenant_id::text = current_setting('app.tenant_id', true));
 
 	-- Seed: Systemhaus-Standardrollen
 	INSERT INTO roles (name, description) VALUES

@@ -53,50 +53,67 @@ func StartOutboxWorker() {
 func processOutbox(ctx context.Context) {
 	workCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	tx, err := db.Pool.Begin(workCtx)
+	rows, err := db.Pool.Query(workCtx, `SELECT id FROM tenants ORDER BY id`)
 	if err != nil {
 		return
 	}
-	defer tx.Rollback(workCtx)
-	var id, tenantID, attempts int
+	defer rows.Close()
+	for rows.Next() {
+		var tenantID int
+		if err := rows.Scan(&tenantID); err == nil {
+			processTenantOutbox(workCtx, tenantID)
+		}
+	}
+}
+
+func processTenantOutbox(ctx context.Context, tenantID int) {
+	var id, attempts int
 	var eventType string
 	var payload []byte
-	err = tx.QueryRow(workCtx, `
-		WITH claimed AS (
-			SELECT id FROM event_outbox
-			WHERE status = 'pending' AND available_at <= CURRENT_TIMESTAMP
-			ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1
-		)
-		UPDATE event_outbox e SET status = 'processing', locked_at = CURRENT_TIMESTAMP, attempts = attempts + 1
-		FROM claimed WHERE e.id = claimed.id
-		RETURNING e.id, e.tenant_id, e.event_type, e.attempts, e.payload`).Scan(&id, &tenantID, &eventType, &attempts, &payload)
-	if err != nil {
-		return
-	}
-	if err = tx.Commit(workCtx); err != nil {
+	err := db.WithTenantTx(ctx, tenantID, func(txCtx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(txCtx, `
+			WITH claimed AS (
+				SELECT id FROM event_outbox
+				WHERE status = 'pending' AND available_at <= CURRENT_TIMESTAMP
+				ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1
+			)
+			UPDATE event_outbox e SET status = 'processing', locked_at = CURRENT_TIMESTAMP, attempts = attempts + 1
+			FROM claimed WHERE e.id = claimed.id
+			RETURNING e.id, e.tenant_id, e.event_type, e.attempts, e.payload`).Scan(&id, &tenantID, &eventType, &attempts, &payload)
+	})
+	if err != nil || id == 0 {
 		return
 	}
 
 	var deliveryErr error
 	if eventType == "security.alert" {
-		deliveryErr = deliverAlert(workCtx, tenantID, payload)
+		deliveryErr = deliverAlert(ctx, tenantID, payload)
 	} else if eventType == "audit.event" {
-		deliveryErr = deliverAudit(workCtx, tenantID, payload)
+		deliveryErr = deliverAudit(ctx, tenantID, payload)
 	} else {
 		deliveryErr = fmt.Errorf("unsupported outbox event type: %s", eventType)
 	}
 	if deliveryErr == nil {
-		_, _ = db.Pool.Exec(workCtx, `UPDATE event_outbox SET status = 'delivered', delivered_at = CURRENT_TIMESTAMP WHERE id = $1`, id)
+		_ = db.WithTenantTx(ctx, tenantID, func(txCtx context.Context, tx pgx.Tx) error {
+			_, err := tx.Exec(txCtx, `UPDATE event_outbox SET status = 'delivered', delivered_at = CURRENT_TIMESTAMP WHERE id = $1`, id)
+			return err
+		})
 		return
 	}
 	if attempts >= 5 {
-		_, _ = db.Pool.Exec(workCtx, `
-			WITH moved AS (UPDATE event_outbox SET status = 'dead', last_error = $2 WHERE id = $1 RETURNING id, tenant_id, payload)
-			INSERT INTO event_dead_letters (outbox_id, tenant_id, payload, error) SELECT id, tenant_id, payload, $2 FROM moved`, id, deliveryErr.Error())
+		_ = db.WithTenantTx(ctx, tenantID, func(txCtx context.Context, tx pgx.Tx) error {
+			_, err := tx.Exec(txCtx, `
+				WITH moved AS (UPDATE event_outbox SET status = 'dead', last_error = $2 WHERE id = $1 RETURNING id, tenant_id, payload)
+				INSERT INTO event_dead_letters (outbox_id, tenant_id, payload, error) SELECT id, tenant_id, payload, $2 FROM moved`, id, deliveryErr.Error())
+			return err
+		})
 		return
 	}
 	backoff := time.Duration(1<<uint(attempts-1)) * time.Second
-	_, _ = db.Pool.Exec(workCtx, `UPDATE event_outbox SET status = 'pending', available_at = CURRENT_TIMESTAMP + $2::interval, last_error = $3 WHERE id = $1`, id, fmt.Sprintf("%f seconds", backoff.Seconds()), deliveryErr.Error())
+	_ = db.WithTenantTx(ctx, tenantID, func(txCtx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(txCtx, `UPDATE event_outbox SET status = 'pending', available_at = CURRENT_TIMESTAMP + $2::interval, last_error = $3 WHERE id = $1`, id, fmt.Sprintf("%f seconds", backoff.Seconds()), deliveryErr.Error())
+		return err
+	})
 }
 
 type auditEvent struct {
