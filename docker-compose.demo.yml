@@ -43,7 +43,7 @@ services:
     command:
       - >-
         while true; do
-          curl -k -s -X POST https://hub:8443/api/v1/metrics \
+          curl -k -s -X POST https://hub:9443/agent/v1/telemetry \
           -H 'Content-Type: application/json' \
           -H 'X-Tenant-ID: 1' \
           -H 'Authorization: Bearer demo-token' \
