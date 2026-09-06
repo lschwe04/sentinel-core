@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -141,14 +142,23 @@ func main() {
 		privatePort = "9443"
 	}
 
+	certFile := filepath.Join("certs", "server.crt")
+	keyFile := filepath.Join("certs", "server.key")
 	// On-the-Fly Zertifikats-Check für den 1-Click Demo-Modus / Out-of-the-Box Start
-	if _, err := os.Stat("certs/server.crt"); os.IsNotExist(err) && os.Getenv("ALLOW_EPHEMERAL_CERTS") == "true" {
+	if _, err := os.Stat(certFile); os.IsNotExist(err) && os.Getenv("ALLOW_EPHEMERAL_CERTS") == "true" {
+		certDir, tempErr := os.MkdirTemp("", "sentinel-certs-")
+		if tempErr != nil {
+			slog.Error("Konnte temporäres Zertifikatsverzeichnis nicht erstellen", "error", tempErr)
+			os.Exit(1)
+		}
+		certFile = filepath.Join(certDir, "server.crt")
+		keyFile = filepath.Join(certDir, "server.key")
 		slog.Info("Keine Zertifikate gefunden. Generiere Self-Signed Zertifikate on-the-fly...")
-		if genErr := generateSelfSignedCert(); genErr != nil {
+		if genErr := generateSelfSignedCert(certFile, keyFile); genErr != nil {
 			slog.Error("Konnte keine Self-Signed Zertifikate generieren", "error", genErr)
 			os.Exit(1)
 		} else {
-			slog.Info("Self-Signed Zertifikate erfolgreich unter ./certs/ erstellt.")
+			slog.Info("Self-Signed Zertifikate erfolgreich erstellt", "directory", certDir)
 		}
 	}
 
@@ -220,8 +230,8 @@ func main() {
 
 	go func() {
 		slog.Info("Public Enrollment-Listener lauscht", "port", publicPort)
-		if _, err := os.Stat("certs/server.crt"); err == nil {
-			if err := publicServer.ListenAndServeTLS("certs/server.crt", "certs/server.key"); err != nil && err != http.ErrServerClosed {
+		if _, err := os.Stat(certFile); err == nil {
+			if err := publicServer.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
 				slog.Error("HTTPS Server abgestürzt", "error", err)
 			}
 		} else {
@@ -230,7 +240,7 @@ func main() {
 	}()
 	go func() {
 		slog.Info("Privater mTLS-Listener lauscht", "port", privatePort)
-		if err := privateServer.ListenAndServeTLS("certs/server.crt", "certs/server.key"); err != nil && err != http.ErrServerClosed {
+		if err := privateServer.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
 			slog.Error("Privater mTLS-Server abgestürzt", "error", err)
 		}
 	}()
@@ -251,11 +261,7 @@ func main() {
 }
 
 // Hilfsfunktion zur automatischen Generierung von Entwicklung-/Demo-Zertifikaten
-func generateSelfSignedCert() error {
-	if err := os.MkdirAll("certs", 0755); err != nil {
-		return err
-	}
-
+func generateSelfSignedCert(certFile, keyFile string) error {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return err
@@ -281,7 +287,7 @@ func generateSelfSignedCert() error {
 		return err
 	}
 
-	certOut, err := os.Create("certs/server.crt")
+	certOut, err := os.Create(certFile)
 	if err != nil {
 		return err
 	}
@@ -290,7 +296,7 @@ func generateSelfSignedCert() error {
 		return err
 	}
 
-	keyOut, err := os.Create("certs/server.key")
+	keyOut, err := os.Create(keyFile)
 	if err != nil {
 		return err
 	}
