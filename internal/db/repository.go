@@ -3,65 +3,35 @@ package db
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type MetricsRepository struct{}
+type TenantRepository struct {
+	pool *pgxpool.Pool
+}
 
-func (MetricsRepository) Insert(ctx context.Context, tenantID, nodeID string, cpu, ram, disk float64, uptime int, recordedAt time.Time) error {
-	if tenantID == "" || nodeID == "" {
-		return fmt.Errorf("tenant ID and node ID are required")
-	}
-	return withTenant(ctx, tenantID, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `
-			INSERT INTO node_metrics (tenant_id, node_id, cpu_usage_pct, ram_usage_pct, disk_usage_pct, uptime_hours, recorded_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`, tenantID, nodeID, cpu, ram, disk, uptime, recordedAt.UTC())
+func NewTenantRepository(pool *pgxpool.Pool) *TenantRepository {
+	return &TenantRepository{pool: pool}
+}
+
+// ExecWithRLS führt eine Funktion innerhalb einer RLS-gesicherten Transaktion aus.
+func (r *TenantRepository) ExecWithRLS(ctx context.Context, tenantID string, fn func(tx pgxx.Tx) error) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
 		return err
-	})
-}
-
-type Metric struct {
-	NodeID       string
-	CPUUsagePct  float64
-	RAMUsagePct  float64
-	DiskUsagePct float64
-	UptimeHours  int
-	Timestamp    time.Time
-}
-
-func (MetricsRepository) Latest(ctx context.Context, tenantID, nodeID string) (Metric, error) {
-	var metric Metric
-	err := withTenant(ctx, tenantID, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `
-		SELECT node_id, cpu_usage_pct, ram_usage_pct, disk_usage_pct, uptime_hours, recorded_at
-		FROM node_metrics WHERE tenant_id = $1 AND node_id = $2
-		ORDER BY recorded_at DESC LIMIT 1
-		`, tenantID, nodeID).Scan(&metric.NodeID, &metric.CPUUsagePct, &metric.RAMUsagePct, &metric.DiskUsagePct, &metric.UptimeHours, &metric.Timestamp)
-	})
-	return metric, err
-}
-
-type AgentRepository struct{}
-
-func (AgentRepository) Touch(ctx context.Context, tenantID, nodeID string) error {
-	id, err := strconv.Atoi(tenantID)
-	if err != nil || id < 1 || nodeID == "" {
-		return fmt.Errorf("invalid tenant or node ID")
 	}
-	return WithTenantTx(ctx, id, func(txCtx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(txCtx, `UPDATE agent_credentials SET last_seen = CURRENT_TIMESTAMP WHERE tenant_id = $1 AND node_id = $2`, id, nodeID)
+	defer tx.Rollback(ctx)
+
+	// Setze die Session-Variable für Row-Level-Security VOR dem eigentlichen Query
+	_, err = tx.Exec(ctx, "SET LOCAL app.tenant_id = $1", tenantID)
+	if err != nil {
+		return fmt.Errorf("RLS setup failed: %w", err)
+	}
+
+	if err := fn(tx); err != nil {
 		return err
-	})
-}
-
-func withTenant(ctx context.Context, tenantID string, fn func(pgx.Tx) error) error {
-	id, err := strconv.Atoi(tenantID)
-	if err != nil || id < 1 {
-		return fmt.Errorf("invalid tenant ID")
 	}
-	return WithTenantTx(ctx, id, func(_ context.Context, tx pgx.Tx) error { return fn(tx) })
+
+	return tx.Commit(ctx)
 }

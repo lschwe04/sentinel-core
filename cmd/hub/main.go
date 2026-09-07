@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,24 +38,33 @@ func main() {
 
 	slog.Info("Starte SentinelCore Management Hub (Enterprise Edition)...")
 	secretProvider := config.NewProvider()
-	startupCtx, startupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	// Startup Context für initiale Boot-Vorgänge (DB, Secrets)
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer startupCancel()
 
-	// 1. Datenbank-Pool verbinden & Indizierte Migrationen ausführen
-	if err := db.InitDB(); err != nil {
+	// Application Context & WaitGroup für Background Worker Lifecycle
+	appCtx, appCancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+
+	// 1. Datenbank-Pool verbinden (Dependency Injection statt globaler State)
+	databaseURL := os.Getenv("DATABASE_URL")
+	dbPool, err := db.InitDB(startupCtx, databaseURL)
+	if err != nil {
 		slog.Error("Datenbank-Initialisierung fehlgeschlagen", "error", err)
 		os.Exit(1)
 	}
-	defer db.CloseDB()
+	defer dbPool.Close()
 
 	if err := db.RunMigrations(); err != nil {
 		slog.Error("Datenbank-Migrationen fehlgeschlagen", "error", err)
 		os.Exit(1)
 	}
 
-	// 2. Alert Engine im Hintergrund starten
-	services.StartAlertEngine()
-	handlers.InitSSEBroker()
+	// 2. Hintergrunddienste mit Context und WaitGroup absichern
+	// HINWEIS: Passe die Signaturen in 'services' und 'handlers' an, sodass sie (context.Context, *sync.WaitGroup) akzeptieren!
+	services.StartAlertEngine(appCtx, &wg)
+	handlers.InitSSEBroker(appCtx, &wg)
 
 	// 3. Router einrichten
 	privateMux := http.NewServeMux()
@@ -64,6 +74,7 @@ func main() {
 	privateMux.HandleFunc("/healthz", handlers.HandleLiveness)
 	privateMux.HandleFunc("/security", handlers.RenderSecurityTrustPage)
 	privateMux.HandleFunc("/webhook/stripe", handlers.HandleStripeWebhook)
+
 	jwtSecret, secretErr := secretProvider.Get(startupCtx, "JWT_SECRET")
 	if secretErr != nil && os.Getenv("JWT_PRIVATE_KEY_PEM") == "" {
 		slog.Error("JWT_SECRET konnte nicht geladen werden", "error", secretErr)
@@ -103,7 +114,7 @@ func main() {
 	privateMux.Handle("/api/v1/events", middleware.EnforceTenantAndRBAC("customer_view", jwtSecret)(tenantRateLimited(http.HandlerFunc(handlers.HandleSSEStream))))
 	privateMux.Handle("/api/v1/onboarding", middleware.EnforceTenantAndRBAC("syshaus_admin", jwtSecret)(tenantRateLimited(http.HandlerFunc(handlers.GenerateOnboardingPayload))))
 
-	// Versionierte Agenten-Schnittstelle: Bootstrap erfolgt über Enrollment, danach über Secret und optional gebundenes mTLS-Zertifikat.
+	// Versionierte Agenten-Schnittstelle
 	var redisClient *redis.Client
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
 		options, redisErr := redis.ParseURL(redisURL)
@@ -144,7 +155,6 @@ func main() {
 
 	certFile := filepath.Join("certs", "server.crt")
 	keyFile := filepath.Join("certs", "server.key")
-	// On-the-Fly Zertifikats-Check für den 1-Click Demo-Modus / Out-of-the-Box Start
 	if _, err := os.Stat(certFile); os.IsNotExist(err) && os.Getenv("ALLOW_EPHEMERAL_CERTS") == "true" {
 		certDir, tempErr := os.MkdirTemp("", "sentinel-certs-")
 		if tempErr != nil {
@@ -162,7 +172,6 @@ func main() {
 		}
 	}
 
-	// Public TLS never requests client certificates; enrollment is the only public route.
 	publicTLS := &tls.Config{
 		MinVersion: tls.VersionTLS13,
 	}
@@ -201,6 +210,7 @@ func main() {
 		slog.Error("CA_CERT_PEM fehlt; privater mTLS-Listener wird nicht gestartet")
 		os.Exit(1)
 	}
+
 	privateMux.Handle("/.well-known/jwks.json", auth.JWKSHandler(securityManager))
 	publicMux := http.NewServeMux()
 	publicMux.Handle("/enroll", auth.RedisRateLimitByIPMiddleware(agentLimiter, true, http.HandlerFunc(handlers.HandleAgentEnrollment)))
@@ -224,7 +234,6 @@ func main() {
 		TLSConfig:         privateTLS,
 	}
 
-	// Graceful Shutdown vorbereiten
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
@@ -238,6 +247,7 @@ func main() {
 			slog.Error("TLS-Zertifikate fehlen; HTTP-Fallback ist für den Beta-Betrieb deaktiviert")
 		}
 	}()
+
 	go func() {
 		slog.Info("Privater mTLS-Listener lauscht", "port", privatePort)
 		if err := privateServer.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
@@ -248,6 +258,9 @@ func main() {
 	<-stop
 	slog.Info("Herunterfahren des Hub Servers eingeleitet...")
 
+	// Signalisiert Hintergrund-Routinen (Alert Engine, SSE), dass sie stoppen sollen
+	appCancel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -257,10 +270,13 @@ func main() {
 	if err := privateServer.Shutdown(ctx); err != nil {
 		slog.Error("Fehler beim mTLS-Shutdown", "error", err)
 	}
+
+	// Wartet bis alle via WaitGroup gesicherten Prozesse sauber beendet sind
+	wg.Wait()
+
 	slog.Info("Hub Server erfolgreich beendet.")
 }
 
-// Hilfsfunktion zur automatischen Generierung von Entwicklung-/Demo-Zertifikaten
 func generateSelfSignedCert(certFile, keyFile string) error {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

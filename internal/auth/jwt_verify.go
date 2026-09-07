@@ -5,30 +5,30 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
-	"os"
 
 	"github.com/golang-jwt/jwt/v4"
 )
 
-func ParseUserJWT(tokenString string) (jwt.MapClaims, error) {
+// ParseUserJWT benötigt zwingend die injecteten Secrets
+func ParseUserJWT(tokenString string, jwtSecret []byte, publicPEM, keyID, revocationVersion, issuer, audience string) (jwt.MapClaims, error) {
 	claims := jwt.MapClaims{}
-	publicPEM := os.Getenv("JWT_PUBLIC_KEY_PEM")
+
 	if publicPEM == "" {
-		secret := os.Getenv("JWT_SECRET")
-		if len(secret) < 32 {
-			return nil, errors.New("JWT verifier is not configured")
+		if len(jwtSecret) < 32 {
+			return nil, errors.New("JWT verifier is not configured securely")
 		}
 		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 			if token.Method != jwt.SigningMethodHS256 {
 				return nil, jwt.ErrSignatureInvalid
 			}
-			return []byte(secret), nil
+			return jwtSecret, nil
 		})
 		if err != nil || !token.Valid {
 			return nil, errors.New("invalid JWT")
 		}
 		return claims, nil
 	}
+
 	block, _ := pem.Decode([]byte(publicPEM))
 	if block == nil {
 		return nil, errors.New("invalid JWT public key PEM")
@@ -41,22 +41,24 @@ func ParseUserJWT(tokenString string) (jwt.MapClaims, error) {
 	if !ok {
 		return nil, errors.New("JWT public key must be Ed25519")
 	}
+
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		if token.Method != jwt.SigningMethodEdDSA || token.Header["kid"] != os.Getenv("JWT_KEY_ID") {
+		if token.Method != jwt.SigningMethodEdDSA || token.Header["kid"] != keyID {
 			return nil, jwt.ErrSignatureInvalid
 		}
 		return publicKey, nil
 	})
+
 	if err != nil || !token.Valid {
 		return nil, errors.New("invalid JWT")
 	}
-	if version := os.Getenv("JWT_REVOCATION_VERSION"); version != "" && claims["rv"] != version {
+	if revocationVersion != "" && claims["rv"] != revocationVersion {
 		return nil, errors.New("revoked JWT")
 	}
-	if issuer := os.Getenv("JWT_ISSUER"); issuer != "" && claims["iss"] != issuer {
+	if issuer != "" && claims["iss"] != issuer {
 		return nil, errors.New("invalid JWT issuer")
 	}
-	if audience := os.Getenv("JWT_AUDIENCE"); audience != "" && !claims.VerifyAudience(audience, true) {
+	if audience != "" && !claims.VerifyAudience(audience, true) {
 		return nil, errors.New("invalid JWT audience")
 	}
 	return claims, nil
