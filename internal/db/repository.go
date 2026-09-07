@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,7 +17,7 @@ func NewTenantRepository(pool *pgxpool.Pool) *TenantRepository {
 }
 
 // ExecWithRLS führt eine Funktion innerhalb einer RLS-gesicherten Transaktion aus.
-func (r *TenantRepository) ExecWithRLS(ctx context.Context, tenantID string, fn func(tx pgxx.Tx) error) error {
+func (r *TenantRepository) ExecWithRLS(ctx context.Context, tenantID string, fn func(tx pgx.Tx) error) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err

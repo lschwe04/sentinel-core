@@ -4,7 +4,12 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// Pool ist der globale Verbindungspool für das db-Paket
+var Pool *pgxpool.Pool
 
 func RunMigrations() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

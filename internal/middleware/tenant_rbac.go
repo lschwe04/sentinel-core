@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -55,10 +56,22 @@ func EnforceTenantAndRBAC(requiredRole string, jwtSecret string) func(http.Handl
 
 			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 
-			// 1. JWT parsen & Signatur prüfen
-			claims, err := auth.ParseUserJWT(tokenStr)
-			if err != nil {
+			// 1. JWT parsen & Signatur prüfen mit dem übergebenen jwtSecret
+			token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+					return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+				}
+				return []byte(jwtSecret), nil
+			})
+
+			if err != nil || !token.Valid {
 				respondJSONError(w, http.StatusForbidden, "Forbidden: Invalid or expired session")
+				return
+			}
+
+			claims, ok := token.Claims.(jwt.MapClaims)
+			if !ok {
+				respondJSONError(w, http.StatusForbidden, "Forbidden: Invalid token claims")
 				return
 			}
 

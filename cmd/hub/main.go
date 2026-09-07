@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sync"
 	"syscall"
 	"time"
 
@@ -39,15 +38,10 @@ func main() {
 	slog.Info("Starte SentinelCore Management Hub (Enterprise Edition)...")
 	secretProvider := config.NewProvider()
 
-	// Startup Context für initiale Boot-Vorgänge (DB, Secrets)
 	startupCtx, startupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer startupCancel()
 
-	// Application Context & WaitGroup für Background Worker Lifecycle
-	appCtx, appCancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
-
-	// 1. Datenbank-Pool verbinden (Dependency Injection statt globaler State)
+	// 1. Datenbank-Pool verbinden (Dependency Injection mit Context & URL)
 	databaseURL := os.Getenv("DATABASE_URL")
 	dbPool, err := db.InitDB(startupCtx, databaseURL)
 	if err != nil {
@@ -61,10 +55,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2. Hintergrunddienste mit Context und WaitGroup absichern
-	// HINWEIS: Passe die Signaturen in 'services' und 'handlers' an, sodass sie (context.Context, *sync.WaitGroup) akzeptieren!
-	services.StartAlertEngine(appCtx, &wg)
-	handlers.InitSSEBroker(appCtx, &wg)
+	// 2. Hintergrunddienste im Hintergrund starten (mit originalen Signaturen)
+	services.StartAlertEngine()
+	handlers.InitSSEBroker()
 
 	// 3. Router einrichten
 	privateMux := http.NewServeMux()
@@ -258,9 +251,6 @@ func main() {
 	<-stop
 	slog.Info("Herunterfahren des Hub Servers eingeleitet...")
 
-	// Signalisiert Hintergrund-Routinen (Alert Engine, SSE), dass sie stoppen sollen
-	appCancel()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -270,9 +260,6 @@ func main() {
 	if err := privateServer.Shutdown(ctx); err != nil {
 		slog.Error("Fehler beim mTLS-Shutdown", "error", err)
 	}
-
-	// Wartet bis alle via WaitGroup gesicherten Prozesse sauber beendet sind
-	wg.Wait()
 
 	slog.Info("Hub Server erfolgreich beendet.")
 }
